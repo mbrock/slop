@@ -1,17 +1,27 @@
-from contextlib import asynccontextmanager, contextmanager
 import hashlib
-import json
 import logging
 import re
 import sqlite3
 import tempfile
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import BinaryIO
 
-from fastapi import FastAPI, UploadFile, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
 import rich
+import trio
+from fastapi import FastAPI, UploadFile, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
+from rich.logging import RichHandler
+
+from slop.gemini import (
+    Content,
+    FileData,
+    GenerateRequest,
+    GeminiClient,
+    Part,
+)
+from slop.views import upload_area
 from tagflow import (
     DocumentMiddleware,
     Live,
@@ -21,20 +31,6 @@ from tagflow import (
     text,
     attr,
 )
-import trio
-
-from slop.gemini import (
-    Content,
-    FileData,
-    FunctionCallingConfig,
-    FunctionDeclaration,
-    GenerateRequest,
-    GeminiClient,
-    Part,
-    Tool,
-    ToolConfig,
-)
-from slop.views import upload_area
 
 logger = logging.getLogger("slop.transcribe")
 
@@ -43,7 +39,7 @@ live = Live()
 
 
 class PartitionSegment(BaseModel):
-    """A segment of the interview with start and end times"""
+    """A segment of the interview with start and end times."""
 
     start_time: str = Field(description="Start time of the segment (HH:MM:SS)")
     end_time: str = Field(description="End time of the segment (HH:MM:SS)")
@@ -54,7 +50,7 @@ class PartitionSegment(BaseModel):
 
 
 class Utterance(BaseModel):
-    """A single utterance in the interview"""
+    """A single utterance in the interview."""
 
     speaker: str = Field(description="Speaker identifier (e.g. 'S1', 'S2')")
     timestamp: str = Field(description="Timestamp of the utterance (HH:MM:SS)")
@@ -63,7 +59,7 @@ class Utterance(BaseModel):
 
 
 class Segment(BaseModel):
-    """A segment of the interview containing utterances"""
+    """A segment of the interview containing utterances."""
 
     start_time: str = Field(description="Start time of the segment (HH:MM:SS)")
     end_time: str = Field(description="End time of the segment (HH:MM:SS)")
@@ -72,20 +68,23 @@ class Segment(BaseModel):
 
 
 class Interview(BaseModel):
-    """An interview with its metadata and transcribed segments"""
+    """An interview with its metadata and transcribed segments."""
 
     id: str
     filename: str
     file_uri: str
     audio_hash: str | None = None  # Hash of the processed audio file
     current_position: str = Field(
-        default="00:00:00", description="Current position in the interview (HH:MM:SS)"
+        default="00:00:00",
+        description="Current position in the interview (HH:MM:SS)",
     )
     segments: list[Segment] = []
 
 
 class Store:
-    """A simple key-value store using SQLite and Pydantic"""
+    """
+    A simple key-value store using SQLite and a Pydantic model.
+    """
 
     def __init__(self, db_path: str | Path, model_class: type[BaseModel]):
         self.db_path = Path(db_path)
@@ -93,18 +92,20 @@ class Store:
         self._init_db()
 
     def _init_db(self):
-        """Initialize the database with a key-value table"""
+        """Initialize the database with a key-value table."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS store (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 )
-            """)
+                """
+            )
 
     def get(self, key: str) -> BaseModel | None:
-        """Get a value by key"""
+        """Get a value by key."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("SELECT value FROM store WHERE key = ?", (key,))
             if row := cursor.fetchone():
@@ -112,7 +113,7 @@ class Store:
             return None
 
     def put(self, key: str, value: BaseModel):
-        """Store a value by key"""
+        """Store a value by key."""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
@@ -120,7 +121,7 @@ class Store:
             )
 
     def values(self) -> list[BaseModel]:
-        """Get all values"""
+        """Get all values."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("SELECT value FROM store")
             return [
@@ -130,39 +131,43 @@ class Store:
 
 
 class BlobStore:
-    """Content-addressed store for binary data"""
+    """
+    Content-addressed store for binary data.
+    """
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self._init_db()
 
     def _init_db(self):
-        """Initialize the database with a blobs table"""
+        """Initialize the database with a blobs table."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS blobs (
                     hash TEXT PRIMARY KEY,
                     data BLOB NOT NULL,
                     mime_type TEXT NOT NULL
                 )
-            """)
+                """
+            )
 
     def put(self, data: bytes, mime_type: str) -> str:
-        """Store binary data and return its hash"""
-        hash = hashlib.sha256(data).hexdigest()
+        """Store binary data and return its hash."""
+        hash_ = hashlib.sha256(data).hexdigest()
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO blobs (hash, data, mime_type) VALUES (?, ?, ?)",
-                (hash, data, mime_type),
+                (hash_, data, mime_type),
             )
-        return hash
+        return hash_
 
-    def get(self, hash: str) -> tuple[bytes, str] | None:
-        """Get binary data and mime type by hash"""
+    def get(self, hash_: str) -> tuple[bytes, str] | None:
+        """Get binary data and mime type by hash."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "SELECT data, mime_type FROM blobs WHERE hash = ?", (hash,)
+                "SELECT data, mime_type FROM blobs WHERE hash = ?", (hash_,)
             )
             if row := cursor.fetchone():
                 return row[0], row[1]
@@ -176,10 +181,13 @@ BLOBS = BlobStore(Path("data/blobs.db"))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    FastAPI lifespan manager using the Live WebSocket support from TagFlow.
+    """
     async with live.run(app):
-        logger.info("live server started")
+        logger.info("Live server started")
         yield
-    logger.info("live server stopped")
+    logger.info("Live server stopped")
 
 
 app = FastAPI(
@@ -192,20 +200,22 @@ app.add_middleware(DocumentMiddleware)
 
 @contextmanager
 def layout(title: str):
-    """Common layout wrapper for all pages"""
+    """Common layout wrapper for all pages."""
     with tag.html(lang="en"):
         with tag.head():
             with tag.title():
                 text(f"{title} - Slop")
+
+            # Tailwind + HTMX scripts
             with tag.script(src="https://cdn.tailwindcss.com"):
                 pass
             with tag.script(src="https://unpkg.com/htmx.org@1.9.10"):
                 pass
             with tag.script():
                 text("""htmx.config = { "globalViewTransitions": true }""")
-            # set tailwind serif font to equity ot
             with tag.script():
-                text("""
+                text(
+                    """
                     tailwind.config = {
                       theme: {
                         fontFamily: {
@@ -213,7 +223,8 @@ def layout(title: str):
                         },
                       },
                     }
-                """)
+                    """
+                )
             live.script_tag()
 
         with tag.body(classes="bg-stone-300 min-h-screen font-serif p-4"):
@@ -222,13 +233,19 @@ def layout(title: str):
 
 @app.get("/")
 async def home():
+    """
+    Renders the home page with an upload area.
+    """
     with layout("Home"):
         with tag.div(classes="prose mx-auto"):
             upload_area()
 
 
 async def process_audio(input_path: Path) -> bytes:
-    """Convert audio to Ogg Vorbis format using ffmpeg"""
+    """
+    Convert audio to Ogg Vorbis format using ffmpeg.
+    Returns the processed audio as bytes.
+    """
     process = await trio.run_process(
         [
             "ffmpeg",
@@ -255,7 +272,14 @@ async def process_audio(input_path: Path) -> bytes:
 
 @app.post("/upload")
 async def upload_audio(audio: UploadFile):
-    # Save the uploaded file temporarily
+    """
+    Endpoint to handle file upload:
+    1. Saves the file temporarily
+    2. Processes and stores the audio in BlobStore
+    3. Uploads to Gemini
+    4. Creates an Interview record
+    5. Redirects to the interview page
+    """
     with tempfile.NamedTemporaryFile(
         delete=False, suffix=Path(audio.filename).suffix
     ) as tmp:
@@ -282,9 +306,7 @@ async def upload_audio(audio: UploadFile):
                 audio_hash=audio_hash,
             )
             INTERVIEWS.put(interview_id, interview)
-
         finally:
-            # Clean up temp file
             tmp_path.unlink()
 
     response = RedirectResponse(url=f"/interview/{interview_id}")
@@ -294,12 +316,16 @@ async def upload_audio(audio: UploadFile):
 
 @app.get("/interview/{interview_id}")
 async def view_interview(interview_id: str):
+    """
+    Renders the interview page, showing the audio player and segments.
+    """
     if not (interview := INTERVIEWS.get(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     with layout(f"Interview - {interview.filename}"):
         with tag.div(classes="prose mx-auto"):
             with tag.h1(classes="mb-2 text-bold"):
+                # Display the filename minus extension
                 text(" ".join(interview.filename.split(".")[:-1]))
 
             if interview.audio_hash:
@@ -328,6 +354,7 @@ async def view_interview(interview_id: str):
                                     ):
                                         pass
 
+                            # Display each utterance
                             with tag.div(classes="flex flex-wrap gap-4 pl-4"):
                                 for utterance in segment.utterances:
                                     with tag.span(
@@ -350,9 +377,12 @@ async def view_interview(interview_id: str):
 
 
 async def extract_segment(input_path: Path, start_time: str, end_time: str) -> bytes:
-    """Extract a segment from an audio file using ffmpeg"""
+    """
+    Extract a segment from an audio file using ffmpeg.
+    Returns the extracted segment as bytes.
+    """
     rich.print(
-        {"input_path": input_path, "start_time": start_time, "end_time": end_time}
+        {"input_path": str(input_path), "start_time": start_time, "end_time": end_time}
     )
     process = await trio.run_process(
         [
@@ -382,10 +412,12 @@ async def extract_segment(input_path: Path, start_time: str, end_time: str) -> b
     return process.stdout
 
 
-@app.get("/audio/{hash}")
-async def get_audio(hash: str, request: Request):
-    """Serve audio file by hash with support for range requests"""
-    if not (result := BLOBS.get(hash)):
+@app.get("/audio/{hash_}")
+async def get_audio(hash_: str, request: Request):
+    """
+    Serve audio file by hash with support for range requests.
+    """
+    if not (result := BLOBS.get(hash_)):
         raise HTTPException(status_code=404, detail="Audio not found")
 
     data, mime_type = result
@@ -393,7 +425,6 @@ async def get_audio(hash: str, request: Request):
 
     # Parse range header
     range_header = request.headers.get("range")
-
     if not range_header:
         # No range requested, return full file
         return Response(
@@ -402,8 +433,8 @@ async def get_audio(hash: str, request: Request):
             headers={"accept-ranges": "bytes", "content-length": str(file_size)},
         )
 
-    # Parse range header (format: "bytes=start-end")
     try:
+        # Expected format: "bytes=start-end"
         range_str = range_header.replace("bytes=", "")
         start_str, end_str = range_str.split("-")
         start = int(start_str) if start_str else 0
@@ -417,10 +448,8 @@ async def get_audio(hash: str, request: Request):
             status_code=416, detail=f"Range not satisfiable. File size: {file_size}"
         )
 
-    # Calculate content length
     content_length = end - start + 1
 
-    # Return partial content
     return Response(
         content=data[start : end + 1],
         status_code=206,
@@ -433,29 +462,28 @@ async def get_audio(hash: str, request: Request):
     )
 
 
-def time_to_seconds(time_str: str) -> int:
-    """Convert a time string in HH:MM:SS format to seconds"""
-    h, m, s = map(int, time_str.split(":"))
-    return h * 3600 + m * 60 + s
-
-
 def parse_transcription_xml(xml_text: str) -> list[Utterance]:
-    """Parse transcription XML into a list of Utterances"""
+    """
+    Parse transcription XML into a list of Utterances.
+    Expected format:
+        <transcript>
+            <utterance speaker="S1" start="00:00:03">Hello</utterance>
+            ...
+        </transcript>
+    """
     import xml.etree.ElementTree as ET
     from io import StringIO
 
-    # Parse XML string
     try:
         tree = ET.parse(StringIO(xml_text))
         root = tree.getroot()
-
         utterances = []
-        for utterance in root.findall("utterance"):
+        for utt in root.findall("utterance"):
             utterances.append(
                 Utterance(
-                    speaker=utterance.get("speaker"),
-                    timestamp=utterance.get("start"),
-                    text=utterance.text.strip() if utterance.text else "",
+                    speaker=utt.get("speaker"),
+                    timestamp=utt.get("start"),
+                    text=utt.text.strip() if utt.text else "",
                 )
             )
         return utterances
@@ -467,6 +495,12 @@ def parse_transcription_xml(xml_text: str) -> list[Utterance]:
 
 @app.post("/interview/{interview_id}/transcribe-next")
 async def transcribe_next_segment(interview_id: str):
+    """
+    Transcribe the next audio segment (2 minutes) for the given interview:
+    1. Extracts the next segment from the stored audio
+    2. Uploads segment to Gemini for transcription
+    3. Parses the transcription XML and appends it to the interview
+    """
     if not (interview := INTERVIEWS.get(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
@@ -475,7 +509,6 @@ async def transcribe_next_segment(interview_id: str):
 
     rich.print(interview)
 
-    # Create a temporary file for the full audio
     with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
         audio_data, _ = BLOBS.get(interview.audio_hash)
         tmp.write(audio_data)
@@ -483,15 +516,14 @@ async def transcribe_next_segment(interview_id: str):
         tmp_path = Path(tmp.name)
 
         try:
-            # Extract the next one-minute segment
+            # Extract the next two-minute segment
             start_time = interview.current_position
             end_time = increment_time(start_time, seconds=60 * 2)
 
-            # Extract audio for this segment
             segment_audio = await extract_segment(tmp_path, start_time, end_time)
             segment_hash = BLOBS.put(segment_audio, "audio/ogg")
 
-            # Create new segment
+            # Create a new segment
             segment = Segment(
                 start_time=start_time,
                 end_time=end_time,
@@ -522,25 +554,24 @@ async def transcribe_next_segment(interview_id: str):
                                 )
                             ),
                             Part(
-                                text="""Please transcribe this audio segment.
-                                Identify each speaker (S1, S2, etc.) and provide accurate timestamps.
-                                Format your response as XML in the following format:
-                                
-                                <transcript>
-                                  <utterance speaker="S1" start="00:00:03">Hello, how are you?</utterance>
-                                  <utterance speaker="S2" start="00:00:05">I'm doing well, thank you.</utterance>
-                                  ...
-                                </transcript>
+                                text="""
+Please transcribe this audio segment.
+Identify each speaker (S1, S2, etc.) and provide accurate timestamps.
+Format your response as XML in the following format:
 
-                                Make sure to:
-                                1. Use speaker IDs like S1, S2, etc.
-                                2. Include accurate timestamps in HH:MM:SS format
-                                3. Put the spoken text as the content of each utterance tag
-                                4. Only output valid XML - no other text before or after"""
+<transcript>
+  <utterance speaker="S1" start="00:00:03">Hello, how are you?</utterance>
+  <utterance speaker="S2" start="00:00:05">I'm doing well, thank you.</utterance>
+</transcript>
+
+1. Use speaker IDs like S1, S2, etc.
+2. Include timestamps in HH:MM:SS format
+3. Output only valid XML, no extra text.
+"""
                             ),
                         ],
                     )
-                ],
+                ]
             )
 
             response = await client.generate_content_sync(request)
@@ -549,23 +580,20 @@ async def transcribe_next_segment(interview_id: str):
                     status_code=500, detail="Failed to transcribe segment"
                 )
 
-            # Get the text content from the response
+            # Extract the text content
             full_text = response.candidates[0].content.parts[0].text
 
-            # Find the XML content with a simple regexp
-            xml_text = re.search(
+            # Find the XML
+            xml_match = re.search(
                 r"<transcript>(.*?)</transcript>", full_text, re.DOTALL
             )
-
-            if not xml_text:
+            if not xml_match:
                 raise HTTPException(
                     status_code=500, detail="Failed to find transcription XML"
                 )
 
-            assert isinstance(xml_text, re.Match)
-
-            # Parse the XML into utterances
-            new_utterances = parse_transcription_xml(xml_text.group(0))
+            xml_text = xml_match.group(0)
+            new_utterances = parse_transcription_xml(xml_text)
             if not new_utterances:
                 raise HTTPException(
                     status_code=500, detail="Failed to parse transcription XML"
@@ -574,22 +602,14 @@ async def transcribe_next_segment(interview_id: str):
             # Add utterances to the segment
             segment.utterances = new_utterances
 
-            # Update the current position based on the last utterance
-            interview.current_position = increment_time(
-                interview.current_position,
-                seconds=60 * 2 - 1,
-            )
+            # Advance current position by two minutes - 1 second
+            interview.current_position = increment_time(start_time, seconds=60 * 2 - 1)
 
-            # Add the segment to the interview
+            # Append segment to interview and save
             interview.segments.append(segment)
-
-            # Save the updated interview
             INTERVIEWS.put(interview.id, interview)
-
         finally:
-            # Clean up temp file
             tmp_path.unlink()
-            # Clean up Gemini file
             await client.delete_file(file.name)
 
     response = RedirectResponse(url=f"/interview/{interview_id}")
@@ -598,19 +618,20 @@ async def transcribe_next_segment(interview_id: str):
 
 
 def increment_time(time_str: str, seconds: int) -> str:
-    """Add seconds to a time string in HH:MM:SS format"""
-    h, m, s = map(int, time_str.split(":"))
-    total_seconds = h * 3600 + m * 60 + s + seconds
+    """Add `seconds` to a time string in HH:MM:SS format."""
+    h, m, s_ = map(int, time_str.split(":"))
+    total_seconds = h * 3600 + m * 60 + s_ + seconds
     h, remainder = divmod(total_seconds, 3600)
-    m, s = divmod(remainder, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
+    m, s_ = divmod(remainder, 60)
+    return f"{h:02d}:{m:02d}:{s_:02d}"
 
 
-if __name__ == "__main__":
-    import trio
-    import hypercorn.trio
+def main():
+    """
+    Runs the application with Hypercorn and Trio.
+    """
     import hypercorn.config
-    from rich.logging import RichHandler
+    import hypercorn.trio
 
     logging.basicConfig(
         level=logging.INFO,
@@ -624,3 +645,7 @@ if __name__ == "__main__":
     config.worker_class = "trio"
 
     trio.run(hypercorn.trio.serve, app, config)
+
+
+if __name__ == "__main__":
+    main()
