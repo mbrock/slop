@@ -542,22 +542,45 @@ async def transcribe_next_segment(interview_id: str):
             rich.print(file)
             rich.print(f"bytes: {len(segment_audio)}")
 
-            # Request transcription
-            request = GenerateRequest(
-                contents=[
-                    Content(
-                        role="user",
-                        parts=[
+            # Prepare parts for the request
+            parts = []
+
+            # If there's a previous segment, include its audio and transcription first
+            if interview.segments:
+                prev_segment = interview.segments[-1]
+                if prev_segment.audio_hash:
+                    prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
+                    prev_file = await client.upload_bytes(
+                        prev_audio_data,
+                        mime_type="audio/ogg",
+                        display_name=f"previous_segment_{prev_segment.start_time}",
+                    )
+                    parts.extend(
+                        [
+                            Part(
+                                text="For context, here is the previous segment's audio and transcription:"
+                            ),
                             Part(
                                 fileData=FileData(
-                                    fileUri=file.uri, mimeType="audio/ogg"
+                                    fileUri=prev_file.uri, mimeType="audio/ogg"
                                 )
                             ),
                             Part(
-                                text="""
-Please transcribe this audio segment.
-Identify each speaker (S1, S2, etc.) and provide accurate timestamps.
-Format your response as XML in the following format:
+                                text="".join(
+                                    f'<utterance speaker="{u.speaker}" start="{u.timestamp}">{u.text}</utterance>'
+                                    for u in prev_segment.utterances
+                                )
+                            ),
+                        ]
+                    )
+
+            # Add current segment's audio and instructions
+            parts.extend(
+                [
+                    Part(text="Please transcribe this audio segment:"),
+                    Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
+                    Part(
+                        text="""Format your response as XML in the following format:
 
 <transcript>
   <utterance speaker="S1" start="00:00:03">Hello, how are you?</utterance>
@@ -567,9 +590,18 @@ Format your response as XML in the following format:
 1. Use speaker IDs like S1, S2, etc.
 2. Include timestamps in HH:MM:SS format
 3. Output only valid XML, no extra text.
+4. Maintain consistent speaker identities with the previous segment's context.
 """
-                            ),
-                        ],
+                    ),
+                ]
+            )
+
+            # Request transcription
+            request = GenerateRequest(
+                contents=[
+                    Content(
+                        role="user",
+                        parts=parts,
                     )
                 ]
             )
