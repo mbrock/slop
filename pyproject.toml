@@ -15,6 +15,7 @@ dependencies = [
     "httpx-sse>=0.4.0",
     "tagflow>=0.6.0",
     "python-multipart>=0.0.20",
+    "pydub>=0.25.1",
 ]
 
 [build-system]

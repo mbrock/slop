@@ -312,27 +312,23 @@ class GeminiClient:
             # response.raise_for_status()
             # return GenerateContentResponse(**body)
 
-    async def upload_file(
+    async def upload_bytes(
         self,
-        file_path: Union[str, Path],
+        data: bytes,
+        mime_type: str,
         display_name: Optional[str] = None,
     ) -> File:
-        """Upload a file to the Gemini API.
+        """Upload bytes data to the Gemini API.
 
         Args:
-            file_path: Path to the file to upload
+            data: The bytes to upload
+            mime_type: MIME type of the data
             display_name: Optional display name for the file
 
         Returns:
             File object containing metadata about the uploaded file
         """
-        file_path = Path(file_path)
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        # Get file info
-        mime_type = os.popen(f"file -b --mime-type {file_path}").read().strip()
-        file_size = file_path.stat().st_size
+        file_size = len(data)
 
         # Initial resumable upload request
         url = f"{self.base_url}/upload/v1beta/files"
@@ -363,20 +359,46 @@ class GeminiClient:
             if not upload_url:
                 raise ValueError("No upload URL received from server")
 
-            # Upload the file
+            # Upload the data
             headers = {
                 "Content-Length": str(file_size),
                 "X-Goog-Upload-Offset": "0",
                 "X-Goog-Upload-Command": "upload, finalize",
             }
-            with open(file_path, "rb") as f:
-                response = await client.post(
-                    upload_url,
-                    headers=headers,
-                    content=f.read(),
-                )
+            response = await client.post(
+                upload_url,
+                headers=headers,
+                content=data,
+            )
             response.raise_for_status()
             return File.model_validate(response.json()["file"])
+
+    async def upload_file(
+        self,
+        file_path: Union[str, Path],
+        display_name: Optional[str] = None,
+    ) -> File:
+        """Upload a file to the Gemini API.
+
+        Args:
+            file_path: Path to the file to upload
+            display_name: Optional display name for the file
+
+        Returns:
+            File object containing metadata about the uploaded file
+        """
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        # Get file info
+        mime_type = os.popen(f"file -b --mime-type {file_path}").read().strip()
+
+        # Read file data
+        with open(file_path, "rb") as f:
+            data = f.read()
+
+        return await self.upload_bytes(data, mime_type, display_name)
 
     async def get_file(self, file_name: str) -> File:
         """Get metadata for a specific file.
@@ -438,6 +460,7 @@ class GeminiClient:
         """Non-streaming version of generate_content"""
         url = f"{self.base_url}/v1beta/models/{model}:generateContent"
         async with httpx.AsyncClient() as client:
+            rich.print(request.model_dump(exclude_none=True))
             response = await client.post(
                 url,
                 params={"key": self.api_key},
