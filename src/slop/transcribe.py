@@ -237,7 +237,7 @@ async def process_audio(input_path: Path) -> bytes:
             "-c:a",
             "libvorbis",  # Vorbis codec
             "-q:a",
-            "4",  # Quality level (0-10, 4 is good)
+            "6",  # Quality level (0-10, 4 is good)
             "-f",
             "ogg",  # Output format
             "pipe:1",  # Output to stdout
@@ -312,17 +312,6 @@ async def view_interview(interview_id: str):
                     ):
                         pass
 
-            with tag.form(
-                action=f"/interview/{interview_id}/transcribe-next",
-                method="post",
-                classes="mb-4",
-            ):
-                with tag.button(
-                    type="submit",
-                    classes="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600",
-                ):
-                    text("Transcribe Next Segment")
-
             if interview.segments:
                 with tag.div(classes="flex flex-col gap-8"):
                     for segment in interview.segments:
@@ -348,46 +337,16 @@ async def view_interview(interview_id: str):
                                             classes("font-bold")
                                         text(utterance.text)
 
-
-PARTITION_TOOL = Tool(
-    functionDeclarations=[
-        FunctionDeclaration(
-            name="partition_interview",
-            description="Partition an audio interview into segments of around a minute each",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "segments": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "start_time": {
-                                    "type": "string",
-                                    "description": "Start time of the segment (HH:MM:SS) (should be 00:00:00 for the first segment)",
-                                },
-                                "end_time": {
-                                    "type": "string",
-                                    "description": "End time of the segment (HH:MM:SS) (should be in the middle of a pause or at the end of a speaker turn)",
-                                },
-                                "phrases": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string",
-                                        "description": "A brief set of phrases or paraphrases that help identify the segment. It should fit in a line.",
-                                    },
-                                },
-                            },
-                            "required": ["start_time", "end_time", "phrases"],
-                        },
-                        "description": "The segments of the interview",
-                    }
-                },
-                "required": ["segments"],
-            },
-        )
-    ]
-)
+            with tag.form(
+                action=f"/interview/{interview_id}/transcribe-next",
+                method="post",
+                classes="mb-4",
+            ):
+                with tag.button(
+                    type="submit",
+                    classes="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600",
+                ):
+                    text("Transcribe Next Segment")
 
 
 async def extract_segment(input_path: Path, start_time: str, end_time: str) -> bytes:
@@ -421,92 +380,6 @@ async def extract_segment(input_path: Path, start_time: str, end_time: str) -> b
         raise RuntimeError(f"FFmpeg failed: {stderr}")
 
     return process.stdout
-
-
-@app.post("/interview/{interview_id}/partition")
-async def partition_interview(interview_id: str):
-    if not (interview := INTERVIEWS.get(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
-
-    # Create a temporary file for the full audio
-    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
-        if not interview.audio_hash:
-            raise HTTPException(status_code=400, detail="Interview has no audio")
-
-        audio_data, _ = BLOBS.get(interview.audio_hash)
-        tmp.write(audio_data)
-        tmp.flush()
-        tmp_path = Path(tmp.name)
-
-        try:
-            client = GeminiClient()
-            request = GenerateRequest(
-                contents=[
-                    Content(
-                        role="user",
-                        parts=[
-                            Part(fileData=FileData(fileUri=interview.file_uri)),
-                            Part(
-                                text="""Please listen to this interview and partition it into clean segments of ROUGHLY three minutes each, making sure to end each segment in the middle of a natural pause or at the end of a speaker turn.
-                                Provide the start and end time for each segment, along with a brief set of phrases that help identify the segment.
-                                Use the `partition_interview` tool to provide the segments."""
-                            ),
-                        ],
-                    )
-                ],
-                tools=[PARTITION_TOOL],
-                toolConfig=ToolConfig(
-                    functionCallingConfig=FunctionCallingConfig(mode="ANY")
-                ),
-            )
-
-            response = await client.generate_content_sync(request)
-            if not response.candidates:
-                raise HTTPException(
-                    status_code=500, detail="Failed to partition interview"
-                )
-
-            rich.print(response)
-
-            # Look for a function call part among all parts
-            function_call = None
-            for part in response.candidates[0].content.parts:
-                rich.print(part)
-                if hasattr(part, "functionCall") and part.functionCall:
-                    function_call = part.functionCall
-                    break
-
-            if not function_call or function_call.name != "partition_interview":
-                raise HTTPException(
-                    status_code=500, detail="Invalid response from model"
-                )
-
-            # Create segments with audio extracts
-            segments = []
-            for segment_data in function_call.args["segments"]:
-                # Extract audio for this segment
-                segment_audio = await extract_segment(
-                    tmp_path, segment_data["start_time"], segment_data["end_time"]
-                )
-
-                # Store the segment audio
-                audio_hash = BLOBS.put(segment_audio, "audio/ogg")
-
-                # Create the segment with audio hash
-                segment = Segment(**segment_data, audio_hash=audio_hash)
-                segments.append(segment)
-
-            # Update the interview with the new segments
-            interview.segments = segments
-            INTERVIEWS.put(interview.id, interview)
-
-        finally:
-            # Clean up temp file
-            tmp_path.unlink()
-
-    response = RedirectResponse(url=f"/interview/{interview_id}")
-    response.status_code = 303  # See Other
-    return response
 
 
 @app.get("/audio/{hash}")
