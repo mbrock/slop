@@ -18,18 +18,15 @@ import httpx
 from httpx_sse import ServerSentEvent, aconnect_sse
 from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler
 from pydantic.alias_generators import to_camel
+import rich
 
 
-class GoogleBaseModel(BaseModel):
-    model_config = ConfigDict(alias_generator=to_camel)
-
-
-class FunctionParameter(GoogleBaseModel):
+class FunctionParameter(BaseModel):
     type: str
     description: str
 
 
-class FunctionDeclaration(GoogleBaseModel):
+class FunctionDeclaration(BaseModel):
     name: str
     description: str
     parameters: Dict[str, Any] = Field(
@@ -38,28 +35,37 @@ class FunctionDeclaration(GoogleBaseModel):
     )
 
 
-class Tool(GoogleBaseModel):
-    function_declarations: List[FunctionDeclaration]
+class FunctionCallingConfig(BaseModel):
+    mode: Literal["ANY", "AUTO", "NONE"]
+    allowedFunctionNames: Optional[List[str]] = None
 
 
-class Blob(GoogleBaseModel):
-    mime_type: str
+class ToolConfig(BaseModel):
+    functionCallingConfig: Optional[FunctionCallingConfig] = None
+
+
+class Tool(BaseModel):
+    functionDeclarations: List[FunctionDeclaration]
+
+
+class Blob(BaseModel):
+    mimeType: str
     data: str  # base64-encoded string
 
 
-class FunctionCall(GoogleBaseModel):
+class FunctionCall(BaseModel):
     name: str
     args: Dict[str, Any]
 
 
-class FunctionResponse(GoogleBaseModel):
+class FunctionResponse(BaseModel):
     name: str
     response: Dict[str, Any]
 
 
-class FileData(GoogleBaseModel):
-    mime_type: Optional[str] = None
-    file_uri: str
+class FileData(BaseModel):
+    fileUri: str
+    mimeType: Optional[str] = None
 
 
 class Language(str, Enum):
@@ -67,7 +73,7 @@ class Language(str, Enum):
     PYTHON = "PYTHON"
 
 
-class ExecutableCode(GoogleBaseModel):
+class ExecutableCode(BaseModel):
     language: Language
     code: str
 
@@ -79,63 +85,31 @@ class Outcome(str, Enum):
     DEADLINE_EXCEEDED = "OUTCOME_DEADLINE_EXCEEDED"
 
 
-class CodeExecutionResult(GoogleBaseModel):
+class CodeExecutionResult(BaseModel):
     outcome: Outcome
     output: Optional[str] = None
 
 
-class TextPart(GoogleBaseModel):
-    text: str
+class Part(BaseModel):
+    text: Optional[str] = None
+    inlineData: Optional[Blob] = None
+    functionCall: Optional[FunctionCall] = None
+    functionResponse: Optional[FunctionResponse] = None
+
+    fileData: Optional[FileData] = None
+    executableCode: Optional[ExecutableCode] = None
+    codeExecutionResult: Optional[CodeExecutionResult] = None
 
 
-class InlineDataPart(GoogleBaseModel):
-    inline_data: Optional[Blob] = None
-
-
-class FunctionCallPart(GoogleBaseModel):
-    function_call: Optional[FunctionCall] = None
-
-
-class FunctionResponsePart(GoogleBaseModel):
-    function_response: Optional[FunctionResponse] = None
-
-
-class FileDataPart(GoogleBaseModel):
-    file_data: Optional[FileData] = None
-    executable_code: Optional[ExecutableCode] = None
-    code_execution_result: Optional[CodeExecutionResult] = None
-
-
-Part = (
-    TextPart | InlineDataPart | FunctionCallPart | FunctionResponsePart | FileDataPart
-)
-
-
-class Content(GoogleBaseModel):
+class Content(BaseModel):
     role: str
     parts: List[Part]
 
 
-class GenerateRequest(GoogleBaseModel):
+class GenerateRequest(BaseModel):
     contents: Union[Content, List[Content]]
     tools: Optional[List[Tool]] = None
-
-
-# class NotNullable:
-#     def __get_pydantic_core_schema__(
-#         self, source: Type[Any], handler: GetCoreSchemaHandler
-#     ):
-#         schema = handler(source)
-#         assert schema["type"] == "nullable"
-#         cs = schema["schema"]
-#         import rich
-
-#         rich.inspect(schema)
-#         return schema
-
-
-# T = TypeVar("T")
-# Omissible = Annotated[Optional[T], NotNullable()]
+    toolConfig: Optional[ToolConfig] = None
 
 
 class MovieSearchParams(BaseModel):
@@ -180,13 +154,13 @@ class HarmBlockThreshold(str, Enum):
     OFF = "OFF"
 
 
-class SafetyRating(GoogleBaseModel):
+class SafetyRating(BaseModel):
     category: HarmCategory
     probability: HarmProbability
     blocked: bool = False
 
 
-class SafetySetting(GoogleBaseModel):
+class SafetySetting(BaseModel):
     category: HarmCategory
     threshold: HarmBlockThreshold
 
@@ -205,11 +179,11 @@ class FinishReason(str, Enum):
     MALFORMED_FUNCTION_CALL = "MALFORMED_FUNCTION_CALL"
 
 
-class UsageMetadata(GoogleBaseModel):
-    prompt_token_count: int
-    cached_content_token_count: Optional[int] = None
-    candidates_token_count: int
-    total_token_count: int
+class UsageMetadata(BaseModel):
+    promptTokenCount: int
+    cachedContentTokenCount: Optional[int] = None
+    candidatesTokenCount: int
+    totalTokenCount: int
 
 
 class BlockReason(str, Enum):
@@ -220,39 +194,76 @@ class BlockReason(str, Enum):
     PROHIBITED_CONTENT = "PROHIBITED_CONTENT"
 
 
-class PromptFeedback(GoogleBaseModel):
-    block_reason: Optional[BlockReason] = None
-    safety_ratings: List[SafetyRating]
+class PromptFeedback(BaseModel):
+    blockReason: Optional[BlockReason] = None
+    safetyRatings: List[SafetyRating]
 
 
-class Candidate(GoogleBaseModel):
+class Candidate(BaseModel):
     content: Content
-    finish_reason: Optional[FinishReason] = None
-    safety_ratings: List[SafetyRating] = []
-    token_count: Optional[int] = None
+    finishReason: Optional[FinishReason] = None
+    safetyRatings: List[SafetyRating] = []
+    tokenCount: Optional[int] = None
     index: Optional[int] = None
 
 
-class GenerateContentResponse(GoogleBaseModel):
+class GenerateContentResponse(BaseModel):
     candidates: List[Candidate]
-    prompt_feedback: Optional[PromptFeedback] = None
-    usage_metadata: Optional[UsageMetadata] = None
-    model_version: Optional[str] = None
+    promptFeedback: Optional[PromptFeedback] = None
+    usageMetadata: Optional[UsageMetadata] = None
+    modelVersion: Optional[str] = None
 
 
-class GenerationConfig(GoogleBaseModel):
-    stop_sequences: Optional[List[str]] = None
-    response_mime_type: Optional[str] = None
-    candidate_count: Optional[int] = Field(default=1, ge=1, le=1)
-    max_output_tokens: Optional[int] = None
+class GenerationConfig(BaseModel):
+    stopSequences: Optional[List[str]] = None
+    responseMimeType: Optional[str] = None
+    candidateCount: Optional[int] = Field(default=1, ge=1, le=1)
+    maxOutputTokens: Optional[int] = None
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    top_p: Optional[float] = None
-    top_k: Optional[int] = None
-    presence_penalty: Optional[float] = None
-    frequency_penalty: Optional[float] = None
-    response_logprobs: Optional[bool] = None
+    topP: Optional[float] = None
+    topK: Optional[int] = None
+    presencePenalty: Optional[float] = None
+    frequencyPenalty: Optional[float] = None
+    responseLogprobs: Optional[bool] = None
     logprobs: Optional[int] = None
-    enable_enhanced_civic_answers: Optional[bool] = None
+    enableEnhancedCivicAnswers: Optional[bool] = None
+
+
+class FileState(str, Enum):
+    UNSPECIFIED = "STATE_UNSPECIFIED"
+    PROCESSING = "PROCESSING"
+    ACTIVE = "ACTIVE"
+    FAILED = "FAILED"
+
+
+class Status(BaseModel):
+    code: int
+    message: str
+    details: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class VideoMetadata(BaseModel):
+    videoDuration: str
+
+
+class File(BaseModel):
+    name: str
+    displayName: Optional[str] = None
+    mimeType: Optional[str] = None
+    sizeBytes: Optional[str] = None
+    createTime: Optional[str] = None
+    updateTime: Optional[str] = None
+    expirationTime: Optional[str] = None
+    sha256Hash: Optional[str] = None
+    uri: str
+    state: Optional[FileState] = None
+    error: Optional[Status] = None
+    videoMetadata: Optional[VideoMetadata] = None
+
+
+class FileList(BaseModel):
+    files: List[File]
+    nextPageToken: Optional[str] = None
 
 
 class GeminiClient:
@@ -262,20 +273,19 @@ class GeminiClient:
             raise ValueError(
                 "API key must be provided or set in GOOGLE_API_KEY environment variable"
             )
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        self.base_url = "https://generativelanguage.googleapis.com"
 
     async def generate_content(
         self,
         request: GenerateRequest,
         model: str = "gemini-2.0-flash-exp",
     ) -> AsyncIterator[GenerateContentResponse]:
-        url = f"{self.base_url}/models/{model}:streamGenerateContent"
+        url = f"{self.base_url}/v1beta/models/{model}:streamGenerateContent"
 
         async with httpx.AsyncClient() as client:
             json = request.model_dump(exclude_none=True)
             import rich
 
-            rich.print(json)
             async with aconnect_sse(
                 client,
                 "POST",
@@ -302,36 +312,178 @@ class GeminiClient:
             # response.raise_for_status()
             # return GenerateContentResponse(**body)
 
+    async def upload_file(
+        self,
+        file_path: Union[str, Path],
+        display_name: Optional[str] = None,
+    ) -> File:
+        """Upload a file to the Gemini API.
+
+        Args:
+            file_path: Path to the file to upload
+            display_name: Optional display name for the file
+
+        Returns:
+            File object containing metadata about the uploaded file
+        """
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        # Get file info
+        mime_type = os.popen(f"file -b --mime-type {file_path}").read().strip()
+        file_size = file_path.stat().st_size
+
+        # Initial resumable upload request
+        url = f"{self.base_url}/upload/v1beta/files"
+        async with httpx.AsyncClient() as client:
+            # Start the upload
+            headers = {
+                "X-Goog-Upload-Protocol": "resumable",
+                "X-Goog-Upload-Command": "start",
+                "X-Goog-Upload-Header-Content-Length": str(file_size),
+                "X-Goog-Upload-Header-Content-Type": mime_type,
+                "Content-Type": "application/json",
+            }
+            metadata = (
+                {"file": {"display_name": display_name}}
+                if display_name
+                else {"file": {}}
+            )
+            response = await client.post(
+                url,
+                params={"key": self.api_key},
+                headers=headers,
+                json=metadata,
+            )
+            response.raise_for_status()
+
+            # Get upload URL from response headers
+            upload_url = response.headers.get("x-goog-upload-url")
+            if not upload_url:
+                raise ValueError("No upload URL received from server")
+
+            # Upload the file
+            headers = {
+                "Content-Length": str(file_size),
+                "X-Goog-Upload-Offset": "0",
+                "X-Goog-Upload-Command": "upload, finalize",
+            }
+            with open(file_path, "rb") as f:
+                response = await client.post(
+                    upload_url,
+                    headers=headers,
+                    content=f.read(),
+                )
+            response.raise_for_status()
+            return File.model_validate(response.json()["file"])
+
+    async def get_file(self, file_name: str) -> File:
+        """Get metadata for a specific file.
+
+        Args:
+            file_name: The name of the file (e.g. 'files/abc-123')
+
+        Returns:
+            File object containing metadata about the file
+        """
+        url = f"{self.base_url}/{file_name}"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params={"key": self.api_key})
+            response.raise_for_status()
+            return File.model_validate(response.json())
+
+    async def list_files(
+        self,
+        page_size: Optional[int] = None,
+        page_token: Optional[str] = None,
+    ) -> FileList:
+        """List all files owned by the requesting project.
+
+        Args:
+            page_size: Maximum number of files to return (default 10, max 100)
+            page_token: Page token from a previous list call
+
+        Returns:
+            FileList object containing the list of files and next page token
+        """
+        url = f"{self.base_url}/files"
+        params = {"key": self.api_key}
+        if page_size:
+            params["pageSize"] = page_size
+        if page_token:
+            params["pageToken"] = page_token
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            return FileList.model_validate(response.json())
+
+    async def delete_file(self, file_name: str) -> None:
+        """Delete a file.
+
+        Args:
+            file_name: The name of the file to delete (e.g. 'files/abc-123')
+        """
+        url = f"{self.base_url}/v1beta/{file_name}"
+        async with httpx.AsyncClient() as client:
+            response = await client.delete(url, params={"key": self.api_key})
+            response.raise_for_status()
+
+    async def generate_content_sync(
+        self,
+        request: GenerateRequest,
+        model: str = "gemini-2.0-flash-exp",
+    ) -> GenerateContentResponse:
+        """Non-streaming version of generate_content"""
+        url = f"{self.base_url}/v1beta/models/{model}:generateContent"
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                url,
+                params={"key": self.api_key},
+                json=request.model_dump(exclude_none=True),
+                headers={"Content-Type": "application/json"},
+                timeout=60 * 5,
+            )
+            if response.is_error:
+                rich.print(response.json())
+            response.raise_for_status()
+            return GenerateContentResponse.model_validate(response.json())
+
 
 # Example usage:
 async def main():
     client = GeminiClient()
 
-    # Create a function declaration using the Pydantic model's schema
-    find_movies = FunctionDeclaration(
-        name="find_movies",
-        description="Find movie titles currently playing in theaters",
-        parameters=MovieSearchParams.model_json_schema(),
+    # Upload the audio file
+    file = await client.upload_file(
+        "media/interview.ogg", display_name="Interview Audio"
     )
+    print(f"Uploaded file: {file.name}")
 
-    # Create a request
+    # Request transcription
     request = GenerateRequest(
         contents=[
             Content(
                 role="user",
                 parts=[
-                    TextPart(text="What comedy movies are playing in Mountain View?")
+                    Part(
+                        text="""Please transcribe this audio file. Use HTML with elements like <span data-speaker="S1 | S2 | ..." data-time="hh:mm:ss"> for each utterance. Use dashes (—), ellipses (…), and light editing for an accurate transcript with typographic care. Write disfluencies like "it's— well— you know—"."""
+                    ),
+                    Part(fileData=FileData(fileUri=file.uri)),
                 ],
             )
         ],
-        tools=[Tool(functionDeclarations=[find_movies])],
     )
 
-    # Generate content
+    # Generate transcription
+    print("\nTranscription:")
     async for response in client.generate_content(request):
-        import rich
+        print(response.candidates[0].content.parts[0].text, end="")
+    print()
 
-        rich.print(response)
+    # Clean up
+    await client.delete_file(file.name)
 
 
 if __name__ == "__main__":
