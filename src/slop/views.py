@@ -14,7 +14,7 @@ def upload_area():
         ):
             with tag.div(
                 classes=(
-                    "w-16 h-16 mx-auto border-2 border-stone-400 bg-stone-200 rounded-lg "
+                    "w-16 h-16 mx-auto border-2 border-gray-400 bg-gray-200 rounded-lg "
                     "flex items-center justify-center "
                     "transition-colors duration-200 ease-in-out "
                     "hover:border-blue-400 hover:bg-blue-50 "

@@ -265,10 +265,11 @@ async def home():
     Renders the home page with an upload area.
     """
     with layout("Home"):
+        breadcrumb({"Ieva's Interviews": "#"})
         with tag.div(classes="max-w-4xl mx-auto p-4"):
             with tag.div(classes="mb-8"):
-                with tag.h1(classes="text-2xl font-bold mb-4"):
-                    text("Interviews")
+                # with tag.h1(classes="text-2xl font-bold mb-4"):
+                #     text("Ieva's Interviews")
 
                 with tag.div(classes="space-y-4"):
                     for interview in INTERVIEWS.values():
@@ -585,7 +586,10 @@ def audio_player(src: str):
 
 
 def breadcrumb(items: dict[str, str]):
-    with tag.nav(classes="hidden sm:flex", aria_label="Breadcrumb"):
+    with tag.nav(
+        classes="hidden sm:flex bg-gray-300 px-4 py-1 border-b border-gray-400",
+        aria_label="Breadcrumb",
+    ):
         with tag.ol(role="list", classes="flex items-center space-x-4"):
             total = len(items)
             for i, (label, href) in enumerate(items.items()):
@@ -610,7 +614,7 @@ def breadcrumb(items: dict[str, str]):
                                     pass
                         with tag.a(
                             href=href,
-                            classes="text-sm font-medium text-gray-500 hover:text-gray-700",
+                            classes="text-sm font-medium text-gray-600 hover:text-gray-700",
                             aria_current="page" if i == (total - 1) else None,
                         ):
                             text(label)
@@ -618,9 +622,11 @@ def breadcrumb(items: dict[str, str]):
 
 def interview_header(title: str, interview_id: str):
     """Renders the interview header with title and action buttons."""
-    with tag.div(classes="px-4 py-2"):
-        breadcrumb({"Interviews": "/", title: "#"})
-        with tag.div(classes="mt-2 md:flex md:items-center md:justify-between"):
+    with tag.div():
+        breadcrumb({"Ieva's Interviews": "/", title: "#"})
+        with tag.div(
+            classes="mt-2 md:flex md:items-center md:justify-between px-4 py-2"
+        ):
             with tag.div(classes="min-w-0 flex-1"):
                 with tag.h2(
                     classes="text-2xl/7 font-bold text-gray-900 sm:truncate sm:text-3xl sm:tracking-tight"
@@ -636,12 +642,12 @@ def interview_header(title: str, interview_id: str):
                         pass
                     with tag.button(
                         type="submit",
-                        classes="inline-flex items-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50",
+                        classes="inline-flex items-center rounded-md px-3 py-2 text-sm font-semibold text-gray-900 bg-white shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50",
                     ):
                         text("Rename")
                 with tag.a(
                     href=f"/interview/{interview_id}/export",
-                    classes="inline-flex items-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50",
+                    classes="inline-flex items-center rounded-md px-3 py-2 text-sm font-semibold text-gray-900 bg-white shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50",
                 ):
                     text("Export DOCX")
 
@@ -659,7 +665,7 @@ async def view_segment(interview_id: str, segment_index: int):
 
     with tag.div(
         id=f"segment-{segment_index}",
-        classes="flex flex-col gap-2 p-4 py-2 border-t-4 border-gray-400",
+        classes="flex flex-col gap-2 p-4 py-2 border-t-4 border-gray-400 mt-4",
     ):
         with tag.div(classes="flex items-center gap-2"):
             if segment.audio_hash:
@@ -675,6 +681,19 @@ async def view_segment(interview_id: str, segment_index: int):
                 },
             ):
                 text("Edit")
+
+            # Add retranscribe button
+            with tag.button(
+                classes="px-2 py-1 text-sm text-gray-600 hover:text-gray-900 whitespace-nowrap",
+                **{
+                    "hx-post": f"/interview/{interview_id}/segment/{segment_index}/retranscribe",
+                    "hx-target": f"#segment-{segment_index}",
+                    "hx-swap": "outerHTML",
+                },
+            ):
+                text("Retranscribe")
+                with tag.span(classes="htmx-indicator"):
+                    text("🤔")
 
         # Display each utterance
         with tag.div(id=f"segment-content-{segment_index}", classes="w-full"):
@@ -937,11 +956,15 @@ def parse_transcription_xml(xml_text: str) -> list[Utterance]:
         return []
 
 
-@app.post("/interview/{interview_id}/transcribe-next")
-async def transcribe_next_segment(interview_id: str):
+async def transcribe_audio_segment(
+    interview_id: str,
+    start_time: str,
+    end_time: str,
+    prev_segment: Segment | None = None,
+) -> list[Utterance]:
     """
-    Transcribe the next audio segment (2 minutes) for the given interview.
-    Returns just the new segment as a partial view.
+    Transcribe an audio segment using Gemini.
+    Returns the transcribed utterances.
     """
     if not (interview := INTERVIEWS.get(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -949,29 +972,17 @@ async def transcribe_next_segment(interview_id: str):
     if not interview.audio_hash:
         raise HTTPException(status_code=400, detail="Interview has no audio")
 
-    rich.print(interview)
-
     with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+        # Get the full interview audio
         audio_data, _ = BLOBS.get(interview.audio_hash)
         tmp.write(audio_data)
         tmp.flush()
         tmp_path = Path(tmp.name)
 
         try:
-            # Extract the next two-minute segment
-            start_time = interview.current_position
-            end_time = increment_time(start_time, seconds=60 * 2)
-
+            # Extract the segment audio
             segment_audio = await extract_segment(tmp_path, start_time, end_time)
             segment_hash = BLOBS.put(segment_audio, "audio/ogg")
-
-            # Create a new segment
-            segment = Segment(
-                start_time=start_time,
-                end_time=end_time,
-                audio_hash=segment_hash,
-                utterances=[],
-            )
 
             # Upload segment to Gemini
             client = GeminiClient()
@@ -981,46 +992,40 @@ async def transcribe_next_segment(interview_id: str):
                 display_name=f"segment_{start_time}",
             )
 
-            rich.print(file)
-            rich.print(f"bytes: {len(segment_audio)}")
-
-            # Prepare parts for the request
             parts = []
 
-            # If there's a previous segment, include its audio and transcription first
-            if interview.segments:
-                prev_segment = interview.segments[-1]
-                if prev_segment.audio_hash:
-                    prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
-                    prev_file = await client.upload_bytes(
-                        prev_audio_data,
-                        mime_type="audio/ogg",
-                        display_name=f"previous_segment_{prev_segment.start_time}",
-                    )
-                    parts.extend(
-                        [
-                            Part(text="Previous segment's audio and transcription:"),
-                            Part(
-                                fileData=FileData(
-                                    fileUri=prev_file.uri, mimeType="audio/ogg"
-                                )
-                            ),
-                            Part(
-                                text="".join(
-                                    f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
-                                    for u in prev_segment.utterances
-                                )
-                            ),
-                        ]
-                    )
+            # If there's a previous segment, include its audio and transcription for context
+            if prev_segment and prev_segment.audio_hash:
+                prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
+                prev_file = await client.upload_bytes(
+                    prev_audio_data,
+                    mime_type="audio/ogg",
+                    display_name=f"previous_segment_{prev_segment.start_time}",
+                )
+                parts.extend(
+                    [
+                        Part(text="Previous segment's audio and transcription:"),
+                        Part(
+                            fileData=FileData(
+                                fileUri=prev_file.uri, mimeType="audio/ogg"
+                            )
+                        ),
+                        Part(
+                            text="".join(
+                                f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
+                                for u in prev_segment.utterances
+                            )
+                        ),
+                    ]
+                )
 
             # Add current segment's audio and instructions
-            parts = [
-                *parts,
-                Part(text="New audio segment:"),
-                Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
-                Part(
-                    text="""Format your response as XML in the following format:
+            parts.extend(
+                [
+                    Part(text="New audio segment:"),
+                    Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
+                    Part(
+                        text="""Format your response as XML in the following format:
 
 <transcript>
   <utterance speaker="S1">Hello, how are you?</utterance>
@@ -1032,19 +1037,12 @@ async def transcribe_next_segment(interview_id: str):
 3. Maintain consistent speaker identities with the previous segment's context.
 4. Use em dashes (—) for interruptions and disfluencies.
 """
-                ),
-            ]
-
-            # Request transcription
-            request = GenerateRequest(
-                contents=[
-                    Content(
-                        role="user",
-                        parts=parts,
-                    )
+                    ),
                 ]
             )
 
+            # Request transcription
+            request = GenerateRequest(contents=[Content(role="user", parts=parts)])
             response = await client.generate_content_sync(request)
             if not response.candidates:
                 raise HTTPException(
@@ -1064,27 +1062,90 @@ async def transcribe_next_segment(interview_id: str):
                 )
 
             xml_text = xml_match.group(0)
-            new_utterances = parse_transcription_xml(xml_text)
-            if not new_utterances:
+            utterances = parse_transcription_xml(xml_text)
+            if not utterances:
                 raise HTTPException(
                     status_code=500, detail="Failed to parse transcription XML"
                 )
 
-            # Add utterances to the segment
-            segment.utterances = new_utterances
-
-            # Advance current position by two minutes - 1 second
-            interview.current_position = increment_time(start_time, seconds=60 * 2 - 1)
-
-            # Append segment to interview and save
-            interview.segments.append(segment)
-            INTERVIEWS.put(interview.id, interview)
-
-            # Return the new segment as a partial view
-            return await view_segment(interview_id, len(interview.segments) - 1)
+            return utterances, segment_hash
         finally:
             tmp_path.unlink()
             await client.delete_file(file.name)
+
+
+@app.post("/interview/{interview_id}/transcribe-next")
+async def transcribe_next_segment(interview_id: str):
+    """
+    Transcribe the next audio segment (2 minutes) for the given interview.
+    Returns just the new segment as a partial view.
+    """
+    if not (interview := INTERVIEWS.get(interview_id)):
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    # Get the previous segment for context if available
+    prev_segment = interview.segments[-1] if interview.segments else None
+
+    # Calculate segment times
+    start_time = interview.current_position
+    end_time = increment_time(start_time, seconds=60 * 2)
+
+    # Transcribe the segment
+    utterances, segment_hash = await transcribe_audio_segment(
+        interview_id,
+        start_time,
+        end_time,
+        prev_segment,
+    )
+
+    # Create and save the new segment
+    segment = Segment(
+        start_time=start_time,
+        end_time=end_time,
+        audio_hash=segment_hash,
+        utterances=utterances,
+    )
+
+    # Advance current position by two minutes - 1 second
+    interview.current_position = increment_time(start_time, seconds=60 * 2 - 1)
+
+    # Append segment to interview and save
+    interview.segments.append(segment)
+    INTERVIEWS.put(interview_id, interview)
+
+    # Return the new segment as a partial view
+    return await view_segment(interview_id, len(interview.segments) - 1)
+
+
+@app.post("/interview/{interview_id}/segment/{segment_index}/retranscribe")
+async def retranscribe_segment(interview_id: str, segment_index: int):
+    """Retranscribe a specific segment using Gemini."""
+    if not (interview := INTERVIEWS.get(interview_id)):
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    try:
+        segment = interview.segments[segment_index]
+    except IndexError:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    # Get the previous segment for context if available
+    prev_segment = interview.segments[segment_index - 1] if segment_index > 0 else None
+
+    # Transcribe the segment
+    utterances, segment_hash = await transcribe_audio_segment(
+        interview_id,
+        segment.start_time,
+        segment.end_time,
+        prev_segment,
+    )
+
+    # Update the segment
+    segment.audio_hash = segment_hash
+    segment.utterances = utterances
+    INTERVIEWS.put(interview_id, interview)
+
+    # Return the updated segment view
+    return await view_segment(interview_id, segment_index)
 
 
 def increment_time(time_str: str, seconds: int) -> str:
