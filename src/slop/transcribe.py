@@ -212,22 +212,8 @@ def layout(title: str):
             # Tailwind + HTMX scripts
             with tag.script(src="https://cdn.tailwindcss.com"):
                 pass
-            # with tag.script():
-            #     text("""htmx.config = { "globalViewTransitions": true }""")
             with tag.script(src="https://unpkg.com/htmx.org@2.0.4"):
                 pass
-            # with tag.script():
-            #     text(
-            #         """
-            #         tailwind.config = {
-            #           theme: {
-            #             fontFamily: {
-            #                 serif: ["Equity OT", "Times New Roman", "serif"],
-            #             },
-            #           },
-            #         }
-            #         """
-            #     )
             live.script_tag()
 
             # Add CSS for loading indicator
@@ -627,27 +613,29 @@ def breadcrumb(items: dict[str, str]):
                             text(label)
 
 
-def interview_header(title: str):
+def interview_header(title: str, interview_id: str):
     """Renders the interview header with title and action buttons."""
     with tag.div(classes="px-4 py-2"):
         breadcrumb({"Interviews": "/", title: "#"})
-        # with tag.div(classes="mt-2 md:flex md:items-center md:justify-between"):
-        #     with tag.div(classes="min-w-0 flex-1"):
-        #         with tag.h2(
-        #             classes="text-2xl/7 font-bold text-gray-900 sm:truncate sm:text-3xl sm:tracking-tight"
-        #         ):
-        #             text(title)
-        #     with tag.div(classes="mt-4 flex shrink-0 md:ml-4 md:mt-0"):
-        #         with tag.button(
-        #             type="button",
-        #             classes="inline-flex items-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50",
-        #         ):
-        #             text("Edit")
-        #         with tag.button(
-        #             type="button",
-        #             classes="ml-3 inline-flex items-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600",
-        #         ):
-        #             text("Publish")
+        with tag.div(classes="mt-2 md:flex md:items-center md:justify-between"):
+            with tag.div(classes="min-w-0 flex-1"):
+                with tag.h2(
+                    classes="text-2xl/7 font-bold text-gray-900 sm:truncate sm:text-3xl sm:tracking-tight"
+                ):
+                    text(title)
+            with tag.div(classes="mt-4 flex shrink-0 md:ml-4 md:mt-0"):
+                with tag.form(
+                    action=f"/interview/{interview_id}/rename",
+                    method="post",
+                    onsubmit="const name = prompt('New name:', this.querySelector('input').value); if (!name) return false; this.querySelector('input').value = name;",
+                ):
+                    with tag.input(type="hidden", name="new_name", value=title):
+                        pass
+                    with tag.button(
+                        type="submit",
+                        classes="inline-flex items-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50",
+                    ):
+                        text("Rename")
 
 
 @app.get("/interview/{interview_id}/segment/{segment_index}")
@@ -777,7 +765,7 @@ async def view_interview(interview_id: str):
 
     with layout(f"Interview - {interview.filename}"):
         with tag.div(classes="prose mx-auto"):
-            interview_header(interview.filename)
+            interview_header(interview.filename, interview.id)
 
             # if interview.audio_hash:
             #     with tag.div(classes="mb-2"):
@@ -1173,6 +1161,18 @@ async def update_segment(
                 if utterance.speaker == "S1":
                     classes("font-bold")
                 text(utterance.text)
+
+
+@app.post("/interview/{interview_id}/rename")
+async def rename_interview(interview_id: str, new_name: str = Form(...)):
+    """Processes the interview rename."""
+    if not (interview := INTERVIEWS.get(interview_id)):
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    interview.filename = new_name
+    INTERVIEWS.put(interview_id, interview)
+
+    return RedirectResponse(url=f"/interview/{interview_id}", status_code=303)
 
 
 def main():
