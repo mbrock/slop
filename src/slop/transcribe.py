@@ -9,7 +9,7 @@ from typing import BinaryIO
 
 import rich
 import trio
-from fastapi import FastAPI, UploadFile, HTTPException, Request, Response
+from fastapi import FastAPI, UploadFile, HTTPException, Request, Response, Form
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from rich.logging import RichHandler
@@ -53,7 +53,6 @@ class Utterance(BaseModel):
     """A single utterance in the interview."""
 
     speaker: str = Field(description="Speaker identifier (e.g. 'S1', 'S2')")
-    timestamp: str = Field(description="Timestamp of the utterance (HH:MM:SS)")
     text: str = Field(description="The transcribed text")
     audio_hash: str | None = None  # Hash of the utterance's audio segment
 
@@ -662,18 +661,110 @@ async def view_segment(interview_id: str, segment_index: int):
     except IndexError:
         raise HTTPException(status_code=404, detail="Segment not found")
 
-    with tag.div(classes="flex flex-col gap-2 p-4 py-2 border-t-4 border-gray-400"):
+    with tag.div(
+        id=f"segment-{segment_index}",
+        classes="flex flex-col gap-2 p-4 py-2 border-t-4 border-gray-400",
+    ):
         with tag.div(classes="flex items-center gap-2"):
             if segment.audio_hash:
                 audio_player(f"/audio/{segment.audio_hash}")
 
+            # Add edit button
+            with tag.button(
+                classes="px-2 py-1 text-sm text-gray-600 hover:text-gray-900",
+                **{
+                    "hx-get": f"/interview/{interview_id}/segment/{segment_index}/edit",
+                    "hx-target": f"#segment-content-{segment_index}",
+                    "hx-swap": "innerHTML",
+                },
+            ):
+                text("Edit")
+
         # Display each utterance
-        with tag.div(classes="flex flex-wrap gap-4"):
-            for utterance in segment.utterances:
-                with tag.span(**{"data-speaker": utterance.speaker}):
-                    if utterance.speaker == "S1":
-                        classes("font-bold")
-                    text(utterance.text)
+        with tag.div(id=f"segment-content-{segment_index}", classes="w-full"):
+            with tag.div(classes="flex flex-wrap gap-4"):
+                for utterance in segment.utterances:
+                    with tag.span(**{"data-speaker": utterance.speaker}):
+                        if utterance.speaker == "S1":
+                            classes("font-bold")
+                        text(utterance.text)
+
+
+@app.get("/interview/{interview_id}/segment/{segment_index}/edit")
+async def edit_segment_dialog(interview_id: str, segment_index: int):
+    """Renders the inline edit form for a segment."""
+    if not (interview := INTERVIEWS.get(interview_id)):
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    try:
+        segment = interview.segments[segment_index]
+    except IndexError:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    # Convert utterances to text format
+    text_content = "\n\n".join(f"{u.speaker}: {u.text}" for u in segment.utterances)
+
+    with tag.form(
+        classes="space-y-4",
+        **{
+            "hx-put": f"/interview/{interview_id}/segment/{segment_index}",
+            "hx-target": f"#segment-content-{segment_index}",
+            "hx-swap": "innerHTML",
+        },
+    ):
+        with tag.div(classes="flex gap-2"):
+            with tag.textarea(
+                name="content",
+                classes="flex-1 h-32 font-mono p-2 border rounded text-sm",
+                placeholder="Format: 'S1: Hello\n\nS2: Hi there'",
+            ):
+                text(text_content)
+            with tag.div(classes="flex flex-col gap-2"):
+                with tag.button(
+                    type="submit",
+                    classes="p-2 text-blue-600 hover:text-blue-800",
+                ):
+                    with tag.svg(
+                        xmlns="http://www.w3.org/2000/svg",
+                        fill="none",
+                        viewBox="0 0 24 24",
+                        **{"stroke-width": "1.5"},
+                        stroke="currentColor",
+                        classes="w-5 h-5",
+                    ):
+                        with tag.path(
+                            **{
+                                "stroke-linecap": "round",
+                                "stroke-linejoin": "round",
+                                "d": "m4.5 12.75 6 6 9-13.5",
+                            }
+                        ):
+                            pass
+                with tag.button(
+                    type="button",
+                    classes="p-2 text-gray-600 hover:text-gray-800",
+                    **{
+                        "hx-get": f"/interview/{interview_id}/segment/{segment_index}",
+                        "hx-target": f"#segment-{segment_index}",
+                        "hx-swap": "outerHTML",
+                    },
+                ):
+                    with tag.svg(
+                        xmlns="http://www.w3.org/2000/svg",
+                        fill="none",
+                        viewBox="0 0 24 24",
+                        **{"stroke-width": "1.5"},
+                        stroke="currentColor",
+                        classes="w-5 h-5",
+                    ):
+                        with tag.path(
+                            **{
+                                "stroke-linecap": "round",
+                                "stroke-linejoin": "round",
+                                "d": "M6 18 18 6M6 6l12 12",
+                            }
+                        ):
+                            pass
 
 
 @app.get("/interview/{interview_id}")
@@ -807,7 +898,7 @@ def parse_transcription_xml(xml_text: str) -> list[Utterance]:
     Parse transcription XML into a list of Utterances.
     Expected format:
         <transcript>
-            <utterance speaker="S1" start="00:00:03">Hello</utterance>
+            <utterance speaker="S1">Hello</utterance>
             ...
         </transcript>
     """
@@ -822,7 +913,6 @@ def parse_transcription_xml(xml_text: str) -> list[Utterance]:
             utterances.append(
                 Utterance(
                     speaker=utt.get("speaker"),
-                    timestamp=utt.get("start"),
                     text=utt.text.strip() if utt.text else "",
                 )
             )
@@ -903,7 +993,7 @@ async def transcribe_next_segment(interview_id: str):
                             ),
                             Part(
                                 text="".join(
-                                    f'<utterance speaker="{u.speaker}" start="{u.timestamp}">{u.text}</utterance>'
+                                    f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
                                     for u in prev_segment.utterances
                                 )
                             ),
@@ -919,15 +1009,14 @@ async def transcribe_next_segment(interview_id: str):
                     text="""Format your response as XML in the following format:
 
 <transcript>
-  <utterance speaker="S1" start="00:00:03">Hello, how are you?</utterance>
-  <utterance speaker="S2" start="00:00:05">I'm doing— I'm— yeah, I'm great.</utterance>
+  <utterance speaker="S1">Hello, how are you?</utterance>
+  <utterance speaker="S2">I'm doing— I'm— yeah, I'm great.</utterance>
 </transcript>
 
 1. Use speaker IDs like S1, S2, etc.
-2. Include timestamps in HH:MM:SS format
-3. Output only valid XML, no extra text.
-4. Maintain consistent speaker identities with the previous segment's context.
-5. Use em dashes (—) for interruptions and disfluencies.
+2. Output only valid XML, no extra text.
+3. Maintain consistent speaker identities with the previous segment's context.
+4. Use em dashes (—) for interruptions and disfluencies.
 """
                 ),
             ]
@@ -1022,6 +1111,50 @@ async def get_audio_duration(input_path: Path) -> str:
     minutes = int((duration_secs % 3600) // 60)
     seconds = int(duration_secs % 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+@app.put("/interview/{interview_id}/segment/{segment_index}")
+async def update_segment(
+    interview_id: str,
+    segment_index: int,
+    content: str = Form(...),
+):
+    """Updates a segment's utterances from the edit form."""
+    if not (interview := INTERVIEWS.get(interview_id)):
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    try:
+        segment = interview.segments[segment_index]
+    except IndexError:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    # Parse the content into utterances
+    utterances = []
+    for line in content.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            continue
+        speaker, content = line.split(":", 1)
+        utterances.append(
+            Utterance(
+                speaker=speaker.strip(),
+                text=content.strip(),
+            )
+        )
+
+    # Update the segment
+    segment.utterances = utterances
+    INTERVIEWS.put(interview_id, interview)
+
+    # Return the updated segment view
+    with tag.div(classes="flex flex-wrap gap-4"):
+        for utterance in segment.utterances:
+            with tag.span(**{"data-speaker": utterance.speaker}):
+                if utterance.speaker == "S1":
+                    classes("font-bold")
+                text(utterance.text)
 
 
 def main():
