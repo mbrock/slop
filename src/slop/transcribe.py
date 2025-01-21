@@ -232,6 +232,11 @@ def layout(title: str):
                     .htmx-request.htmx-indicator {
                         opacity: 1
                     }
+                     
+                    button.htmx-request {
+                        opacity: 0.5;
+                        cursor: wait;
+                    }
                 """)
 
             with tag.script(
@@ -620,6 +625,18 @@ def breadcrumb(items: dict[str, str]):
                             text(label)
 
 
+def button_view(label: str, href: str | None = None, type: str = "button", **attrs):
+    """Renders a button with consistent styling."""
+    base_classes = "inline-flex items-center rounded-md px-3 py-1 text-sm font-semibold text-gray-900 bg-white shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 whitespace-nowrap"
+
+    if href:
+        with tag.a(href=href, classes=base_classes):
+            text(label)
+    else:
+        with tag.button(type=type, classes=base_classes, **attrs):
+            text(label)
+
+
 def interview_header(title: str, interview_id: str):
     """Renders the interview header with title and action buttons."""
     with tag.div():
@@ -640,16 +657,8 @@ def interview_header(title: str, interview_id: str):
                 ):
                     with tag.input(type="hidden", name="new_name", value=title):
                         pass
-                    with tag.button(
-                        type="submit",
-                        classes="inline-flex items-center rounded-md px-3 py-2 text-sm font-semibold text-gray-900 bg-white shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50",
-                    ):
-                        text("Rename")
-                with tag.a(
-                    href=f"/interview/{interview_id}/export",
-                    classes="inline-flex items-center rounded-md px-3 py-2 text-sm font-semibold text-gray-900 bg-white shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50",
-                ):
-                    text("Export DOCX")
+                    button_view("Rename", type="submit")
+                button_view("Export DOCX", href=f"/interview/{interview_id}/export")
 
 
 @app.get("/interview/{interview_id}/segment/{segment_index}")
@@ -672,28 +681,24 @@ async def view_segment(interview_id: str, segment_index: int):
                 audio_player(f"/audio/{segment.audio_hash}")
 
             # Add edit button
-            with tag.button(
-                classes="px-2 py-1 text-sm text-gray-600 hover:text-gray-900",
+            button_view(
+                "Edit",
                 **{
                     "hx-get": f"/interview/{interview_id}/segment/{segment_index}/edit",
                     "hx-target": f"#segment-content-{segment_index}",
                     "hx-swap": "innerHTML",
                 },
-            ):
-                text("Edit")
+            )
 
             # Add retranscribe button
-            with tag.button(
-                classes="px-2 py-1 text-sm text-gray-600 hover:text-gray-900 whitespace-nowrap",
+            button_view(
+                "Retranscribe",
                 **{
                     "hx-post": f"/interview/{interview_id}/segment/{segment_index}/retranscribe",
                     "hx-target": f"#segment-{segment_index}",
                     "hx-swap": "outerHTML",
                 },
-            ):
-                text("Retranscribe")
-                with tag.span(classes="htmx-indicator"):
-                    text("🤔")
+            )
 
         # Display each utterance
         with tag.div(id=f"segment-content-{segment_index}", classes="w-full"):
@@ -794,16 +799,6 @@ async def view_interview(interview_id: str):
         with tag.div(classes="prose mx-auto"):
             interview_header(interview.filename, interview.id)
 
-            # if interview.audio_hash:
-            #     with tag.div(classes="mb-2"):
-            #         with tag.audio(
-            #             src=f"/audio/{interview.audio_hash}",
-            #             controls=True,
-            #             classes="w-full",
-            #             preload="metadata",
-            #         ):
-            #             pass
-
             with tag.div(id="segments", classes="flex flex-col gap-2"):
                 if interview.segments:
                     for i, segment in enumerate(interview.segments):
@@ -827,17 +822,14 @@ async def view_interview(interview_id: str):
                                 pass
 
                     # Transcribe button
-                    with tag.button(
-                        classes="flex items-center gap-2 text-blue-600 hover:text-blue-800 font-medium",
+                    button_view(
+                        "Transcribe more",
                         **{
                             "hx-post": f"/interview/{interview_id}/transcribe-next",
                             "hx-target": "#segments",
                             "hx-swap": "beforeend",
                         },
-                    ):
-                        text("Transcribe next segment")
-                        with tag.span(classes="htmx-indicator"):
-                            text("🤔")
+                    )
 
 
 async def extract_segment(input_path: Path, start_time: str, end_time: str) -> bytes:
