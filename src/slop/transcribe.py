@@ -242,7 +242,13 @@ def layout(title: str):
                     }
                 """)
 
-        with tag.body(classes="bg-stone-300 min-h-screen font-serif p-4"):
+            with tag.script(
+                type="module", src="https://cdn.jsdelivr.net/npm/media-chrome@3/+esm"
+            ):
+                pass
+
+        with tag.body(classes="min-h-screen font-serif p-4"):
+            svg_icons()
             yield
 
 
@@ -329,6 +335,212 @@ async def upload_audio(audio: UploadFile):
     return response
 
 
+def svg_icons():
+    with tag("svg", classes="hidden"):
+        # backward symbol
+        with tag(
+            "symbol",
+            id="backward",
+            viewBox="0 0 24 24",
+            **{
+                "stroke-width": "1.5",
+                "stroke-linecap": "round",
+                "stroke-linejoin": "round",
+            },
+        ):
+            with tag(
+                "path",
+                d="M8 5L5 8M5 8L8 11M5 8H13.5C16.5376 8 19 10.4624 19 13.5C19 15.4826 18.148 17.2202 17 18.188",
+            ):
+                pass
+            with tag("path", d="M5 15V19"):
+                pass
+            with tag(
+                "path",
+                d="M8 18V16C8 15.4477 8.44772 15 9 15H10C10.5523 15 11 15.4477 11 16V18C11 18.5523 10.5523 19 10 19H9C8.44772 19 8 18.5523 8 18Z",
+            ):
+                pass
+
+        # play symbol
+        with tag("symbol", id="play", viewBox="0 0 24 24"):
+            with tag(
+                "path",
+                **{
+                    "fill-rule": "evenodd",
+                    "clip-rule": "evenodd",
+                    "d": "M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.573 0\
+        3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z",
+                },
+            ):
+                pass
+
+        # pause symbol
+        with tag("symbol", id="pause", viewBox="0 0 24 24"):
+            with tag(
+                "path",
+                **{
+                    "fill-rule": "evenodd",
+                    "clip-rule": "evenodd",
+                    "d": "M6.75 5.25a.75.75 0 01.75-.75H9a.75.75 0 01.75.75v13.5a.75.75 0\
+      01-.75.75H7.5a.75.75 0 01-.75-.75V5.25zm7.5 0A.75.75 0 0115 4.5h1.5a.75.75 0 01.75.75v13.5a.75.75 0\
+      01-.75.75H15a.75.75 0 01-.75-.75V5.25z",
+                },
+            ):
+                pass
+
+        # forward symbol
+        with tag(
+            "symbol",
+            id="forward",
+            viewBox="0 0 24 24",
+            **{
+                "stroke-width": "1.5",
+                "stroke-linecap": "round",
+                "stroke-linejoin": "round",
+            },
+        ):
+            with tag(
+                "path",
+                d="M16 5L19 8M19 8L16 11M19 8H10.5C7.46243 8 5 10.4624 5 13.5C5 15.4826 5.85204 17.2202 7 18.188",
+            ):
+                pass
+            with tag("path", d="M13 15V19"):
+                pass
+            with tag(
+                "path",
+                d="M16 18V16C16 15.4477 16.4477 15 17 15H18C18.5523 15 19 15.4477 19 16V18C19 18.5523 18.5523 19 18\
+      19H17C16.4477 19 16 18.5523 16 18Z",
+            ):
+                pass
+
+        # high symbol
+        with tag("symbol", id="high", viewBox="0 0 24 24"):
+            with tag(
+                "path",
+                d="M13.5 4.06c0-1.336-1.616-2.005-2.56-1.06l-4.5 4.5H4.508c-1.141 0-2.318.664-2.66 1.905A9.76 9.76 0\
+      001.5 12c0 .898.121 1.768.35 2.595.341 1.24 1.518 1.905 2.659 1.905h1.93l4.5 4.5c.945.945 2.561.276\
+      2.561-1.06V4.06zM18.584 5.106a.75.75 0 011.06 0c3.808 3.807 3.808 9.98 0 13.788a.75.75 0 11-1.06-1.06\
+      8.25 8.25 0 000-11.668.75.75 0 010-1.06z",
+            ):
+                pass
+            with tag(
+                "path",
+                d="M15.932 7.757a.75.75 0 011.061 0 6 6 0 010 8.486.75.75 0 01-1.06-1.061 4.5 4.5 0 000-6.364.75.75 0\
+      010-1.06z",
+            ):
+                pass
+
+        # off symbol
+        with tag("symbol", id="off", viewBox="0 0 24 24"):
+            with tag(
+                "path",
+                d="M13.5 4.06c0-1.336-1.616-2.005-2.56-1.06l-4.5 4.5H4.508c-1.141 0-2.318.664-2.66 1.905A9.76 9.76 0\
+      001.5 12c0 .898.121 1.768.35 2.595.341 1.24 1.518 1.905 2.659 1.905h1.93l4.5 4.5c.945.945 2.561.276\
+      2.561-1.06V4.06zM17.78 9.22a.75.75 0 10-1.06 1.06L18.44 12l-1.72 1.72a.75.75 0 001.06 1.06l1.72-1.72 1.72\
+      1.72a.75.75 0 101.06-1.06L20.56 12l1.72-1.72a.75.75 0 00-1.06-1.06l-1.72 1.72-1.72-1.72z",
+            ):
+                pass
+
+
+def audio_player(src: str):
+    with tag("media-controller", audio=True, classes="w-full"):
+        attr(
+            "style",
+            """
+            --media-background-color: transparent;
+            --media-control-background: transparent;
+            --media-control-hover-background: transparent;
+        """,
+        )
+        with tag("audio", slot="media", src=src, crossorigin=True):
+            pass
+        with tag(
+            "media-control-bar",
+            classes="h-12 w-full bg-white items-center",
+        ):
+            # rounded-md ring-1 ring-slate-700/10 shadow-xl shadow-black/5
+            with tag("media-seek-backward-button", classes="p-0"):
+                with tag.svg(
+                    slot="icon",
+                    aria_hidden=True,
+                    classes="w-7 h-7 fill-none stroke-gray-500",
+                ):
+                    with tag.use(href="#backward"):
+                        pass
+            with tag(
+                "media-play-button",
+                classes="h-7 w-7 p-2 mx-3 rounded-full bg-gray-700",
+            ):
+                with tag.svg(slot="play", aria_hidden=True, classes="relative left-px"):
+                    with tag.use(href="#play"):
+                        pass
+                with tag.svg(slot="pause", aria_hidden=True):
+                    with tag.use(href="#pause"):
+                        pass
+            with tag("media-seek-forward-button", classes="p-0"):
+                with tag.svg(
+                    slot="icon",
+                    aria_hidden=True,
+                    classes="w-7 h-7 fill-none stroke-gray-500",
+                ):
+                    with tag.use(href="#forward"):
+                        pass
+            with tag("media-time-display", classes="text-gray-500 text-sm"):
+                pass
+            with tag(
+                "media-time-range",
+                classes="block h-2 min-h-0 p-0 m-2 rounded-md bg-gray-50",
+            ):
+                attr(
+                    "style",
+                    """
+                    --media-range-track-background: transparent;
+                    --media-time-range-buffered-color: rgb(0 0 0 / 0.02);
+                    --media-range-bar-color: rgb(79 70 229);
+                    --media-range-track-border-radius: 4px;
+                    --media-range-track-height: 0.5rem;
+                    --media-range-thumb-background: rgb(79 70 229);
+                    --media-range-thumb-box-shadow: 0 0 0 2px rgb(255 255 255 / 0.9);
+                    --media-range-thumb-width: 0.25rem;
+                    --media-range-thumb-height: 1rem;
+                    --media-preview-time-text-shadow: transparent;
+                """,
+                )
+                with tag("media-preview-time-display", classes="text-gray-600 text-xs"):
+                    pass
+            with tag("media-duration-display", classes="text-gray-500 text-xs"):
+                pass
+            with tag("media-mute-button"):
+                with tag.svg(
+                    slot="high",
+                    aria_hidden=True,
+                    classes="w-5 h-5 fill-gray-500",
+                ):
+                    with tag.use(href="#high"):
+                        pass
+                with tag.svg(
+                    slot="medium",
+                    aria_hidden=True,
+                    classes="w-5 h-5 fill-gray-500",
+                ):
+                    with tag.use(href="#high"):
+                        pass
+                with tag.svg(
+                    slot="low",
+                    aria_hidden=True,
+                    classes="w-5 h-5 fill-gray-500",
+                ):
+                    with tag.use(href="#high"):
+                        pass
+                with tag.svg(
+                    slot="off",
+                    aria_hidden=True,
+                    classes="w-5 h-5 fill-gray-500",
+                ):
+                    with tag.use(href="#off"):
+                        pass
+
+
 @app.get("/interview/{interview_id}/segment/{segment_index}")
 async def view_segment(interview_id: str, segment_index: int):
     """Renders a single segment as a partial view."""
@@ -340,19 +552,13 @@ async def view_segment(interview_id: str, segment_index: int):
     except IndexError:
         raise HTTPException(status_code=404, detail="Segment not found")
 
-    with tag.div(classes="flex flex-col gap-2 bg-stone-100 p-4 rounded-lg"):
+    with tag.div(classes="flex flex-col gap-2"):
         with tag.div(classes="flex items-center gap-2"):
             if segment.audio_hash:
-                with tag.audio(
-                    src=f"/audio/{segment.audio_hash}",
-                    controls=True,
-                    classes="h-8",
-                    preload="metadata",
-                ):
-                    pass
+                audio_player(f"/audio/{segment.audio_hash}")
 
         # Display each utterance
-        with tag.div(classes="flex flex-wrap gap-4 pl-4"):
+        with tag.div(classes="flex flex-wrap gap-4"):
             for utterance in segment.utterances:
                 with tag.span(**{"data-speaker": utterance.speaker}):
                     if utterance.speaker == "S1":
@@ -374,15 +580,15 @@ async def view_interview(interview_id: str):
                 # Display the filename minus extension
                 text(" ".join(interview.filename.split(".")[:-1]))
 
-            if interview.audio_hash:
-                with tag.div(classes="mb-2"):
-                    with tag.audio(
-                        src=f"/audio/{interview.audio_hash}",
-                        controls=True,
-                        classes="w-full",
-                        preload="metadata",
-                    ):
-                        pass
+            # if interview.audio_hash:
+            #     with tag.div(classes="mb-2"):
+            #         with tag.audio(
+            #             src=f"/audio/{interview.audio_hash}",
+            #             controls=True,
+            #             classes="w-full",
+            #             preload="metadata",
+            #         ):
+            #             pass
 
             with tag.div(id="segments", classes="flex flex-col gap-8"):
                 if interview.segments:
