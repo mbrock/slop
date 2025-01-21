@@ -213,18 +213,18 @@ def layout(title: str):
             #     text("""htmx.config = { "globalViewTransitions": true }""")
             with tag.script(src="https://unpkg.com/htmx.org@2.0.4"):
                 pass
-            with tag.script():
-                text(
-                    """
-                    tailwind.config = {
-                      theme: {
-                        fontFamily: {
-                            serif: ["Equity OT", "Times New Roman", "serif"],
-                        },
-                      },
-                    }
-                    """
-                )
+            # with tag.script():
+            #     text(
+            #         """
+            #         tailwind.config = {
+            #           theme: {
+            #             fontFamily: {
+            #                 serif: ["Equity OT", "Times New Roman", "serif"],
+            #             },
+            #           },
+            #         }
+            #         """
+            #     )
             live.script_tag()
 
             # Add CSS for loading indicator
@@ -247,7 +247,7 @@ def layout(title: str):
             ):
                 pass
 
-        with tag.body(classes="min-h-screen font-serif p-4"):
+        with tag.body(classes="min-h-screen"):
             svg_icons()
             yield
 
@@ -258,6 +258,13 @@ async def home():
     Renders the home page with an upload area.
     """
     with layout("Home"):
+        with tag.nav(classes="flex justify-between items-center p-4"):
+            for interview in INTERVIEWS.values():
+                with tag.a(
+                    href=f"/interview/{interview.id}",
+                    classes="text-blue-500 hover:text-blue-600",
+                ):
+                    text(interview.filename)
         with tag.div(classes="prose mx-auto"):
             upload_area()
 
@@ -541,6 +548,61 @@ def audio_player(src: str):
                         pass
 
 
+def breadcrumb(items: dict[str, str]):
+    with tag.nav(classes="hidden sm:flex", aria_label="Breadcrumb"):
+        with tag.ol(role="list", classes="flex items-center space-x-4"):
+            total = len(items)
+            for i, (label, href) in enumerate(items.items()):
+                with tag.li():
+                    with tag.div(classes="flex items-center"):
+                        # Render the arrow separator only if it's not the first item
+                        if i > 0:
+                            with tag.svg(
+                                classes="size-5 shrink-0 text-gray-400 mr-4",
+                                viewBox="0 0 20 20",
+                                fill="currentColor",
+                                aria_hidden="true",
+                                **{"data-slot": "icon"},
+                            ):
+                                with tag.path(
+                                    **{
+                                        "fill-rule": "evenodd",
+                                        "d": "M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z",
+                                        "clip-rule": "evenodd",
+                                    }
+                                ):
+                                    pass
+                        with tag.a(
+                            href=href,
+                            classes="text-sm font-medium text-gray-500 hover:text-gray-700",
+                            aria_current="page" if i == (total - 1) else None,
+                        ):
+                            text(label)
+
+
+def interview_header(title: str):
+    """Renders the interview header with title and action buttons."""
+    with tag.div(classes="px-4 py-2"):
+        breadcrumb({"Interviews": "/", title: "#"})
+        # with tag.div(classes="mt-2 md:flex md:items-center md:justify-between"):
+        #     with tag.div(classes="min-w-0 flex-1"):
+        #         with tag.h2(
+        #             classes="text-2xl/7 font-bold text-gray-900 sm:truncate sm:text-3xl sm:tracking-tight"
+        #         ):
+        #             text(title)
+        #     with tag.div(classes="mt-4 flex shrink-0 md:ml-4 md:mt-0"):
+        #         with tag.button(
+        #             type="button",
+        #             classes="inline-flex items-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50",
+        #         ):
+        #             text("Edit")
+        #         with tag.button(
+        #             type="button",
+        #             classes="ml-3 inline-flex items-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600",
+        #         ):
+        #             text("Publish")
+
+
 @app.get("/interview/{interview_id}/segment/{segment_index}")
 async def view_segment(interview_id: str, segment_index: int):
     """Renders a single segment as a partial view."""
@@ -552,7 +614,7 @@ async def view_segment(interview_id: str, segment_index: int):
     except IndexError:
         raise HTTPException(status_code=404, detail="Segment not found")
 
-    with tag.div(classes="flex flex-col gap-2"):
+    with tag.div(classes="flex flex-col gap-2 p-4 py-2 border-t-4 border-gray-400"):
         with tag.div(classes="flex items-center gap-2"):
             if segment.audio_hash:
                 audio_player(f"/audio/{segment.audio_hash}")
@@ -576,9 +638,7 @@ async def view_interview(interview_id: str):
 
     with layout(f"Interview - {interview.filename}"):
         with tag.div(classes="prose mx-auto"):
-            with tag.h1(classes="mb-2 text-bold"):
-                # Display the filename minus extension
-                text(" ".join(interview.filename.split(".")[:-1]))
+            interview_header(interview.filename)
 
             # if interview.audio_hash:
             #     with tag.div(classes="mb-2"):
@@ -590,20 +650,20 @@ async def view_interview(interview_id: str):
             #         ):
             #             pass
 
-            with tag.div(id="segments", classes="flex flex-col gap-8"):
+            with tag.div(id="segments", classes="flex flex-col gap-2"):
                 if interview.segments:
                     for i, segment in enumerate(interview.segments):
                         await view_segment(interview_id, i)
 
             with tag.button(
-                classes="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600",
+                classes="border-t-4 border-gray-400 flex items-center w-full py-2 px-4 mt-4 underline",
                 **{
                     "hx-post": f"/interview/{interview_id}/transcribe-next",
                     "hx-target": "#segments",
                     "hx-swap": "beforeend",
                 },
             ):
-                text("Transcribe Next Segment")
+                text("Transcribe...")
                 with tag.span(classes="htmx-indicator ml-2"):
                     text("Transcribing...")
 
