@@ -246,7 +246,8 @@ def layout(title: str):
 
         with tag.body(classes="min-h-screen"):
             svg_icons()
-            yield
+            with tag.main():
+                yield
 
 
 def time_to_seconds(time_str: str) -> int:
@@ -264,47 +265,56 @@ def calculate_progress(current: str, total: str) -> int:
     return int((current_secs / total_secs) * 100)
 
 
+@app.get("/interview-list")
+def interview_list():
+    """
+    Renders the interview list page.
+    """
+    with tag.div(classes="space-y-4", id="interview-list"):
+        for interview in INTERVIEWS.values():
+            progress = calculate_progress(
+                interview.current_position, interview.duration
+            )
+            with tag.div(classes="border rounded-lg p-4 hover:bg-gray-50"):
+                with tag.a(
+                    href=f"/interview/{interview.id}",
+                    classes="block",
+                ):
+                    with tag.div(classes="flex justify-between items-center mb-2"):
+                        with tag.span(classes="font-medium"):
+                            text(interview.filename)
+                        with tag.span(classes="text-gray-500 text-sm"):
+                            text(f"{interview.current_position} / {interview.duration}")
+
+                    with tag.div(classes="bg-gray-200 rounded-full h-2"):
+                        with tag.div(
+                            classes="bg-blue-600 rounded-full h-2 transition-all",
+                            style=f"width: {progress}%",
+                        ):
+                            pass
+
+
+@app.get("/home")
+def render_home():
+    breadcrumb({"Ieva's Interviews": "#"})
+    with tag.div(classes="max-w-4xl mx-auto p-4"):
+        with tag.div(classes="mb-8"):
+            # with tag.h1(classes="text-2xl font-bold mb-4"):
+            #     text("Ieva's Interviews")
+
+            interview_list()
+
+        with tag.div(classes="prose mx-auto"):
+            upload_area(target="main")
+
+
 @app.get("/")
 async def home():
     """
     Renders the home page with an upload area.
     """
     with layout("Home"):
-        breadcrumb({"Ieva's Interviews": "#"})
-        with tag.div(classes="max-w-4xl mx-auto p-4"):
-            with tag.div(classes="mb-8"):
-                # with tag.h1(classes="text-2xl font-bold mb-4"):
-                #     text("Ieva's Interviews")
-
-                with tag.div(classes="space-y-4"):
-                    for interview in INTERVIEWS.values():
-                        progress = calculate_progress(
-                            interview.current_position, interview.duration
-                        )
-                        with tag.div(classes="border rounded-lg p-4 hover:bg-gray-50"):
-                            with tag.a(
-                                href=f"/interview/{interview.id}",
-                                classes="block",
-                            ):
-                                with tag.div(
-                                    classes="flex justify-between items-center mb-2"
-                                ):
-                                    with tag.span(classes="font-medium"):
-                                        text(interview.filename)
-                                    with tag.span(classes="text-gray-500 text-sm"):
-                                        text(
-                                            f"{interview.current_position} / {interview.duration}"
-                                        )
-
-                                with tag.div(classes="bg-gray-200 rounded-full h-2"):
-                                    with tag.div(
-                                        classes="bg-blue-600 rounded-full h-2 transition-all",
-                                        style=f"width: {progress}%",
-                                    ):
-                                        pass
-
-            with tag.div(classes="prose mx-auto"):
-                upload_area()
+        render_home()
 
 
 async def process_audio(input_path: Path) -> bytes:
@@ -379,9 +389,7 @@ async def upload_audio(audio: UploadFile):
         finally:
             tmp_path.unlink()
 
-    response = RedirectResponse(url=f"/interview/{interview_id}")
-    response.status_code = 303  # See Other
-    return response
+    render_home()
 
 
 def svg_icons():
