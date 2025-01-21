@@ -16,6 +16,7 @@ dependencies = [
     "tagflow>=0.6.0",
     "python-multipart>=0.0.20",
     "pydub>=0.25.1",
+    "python-docx>=1.1.2",
 ]
 
 [build-system]

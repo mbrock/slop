@@ -6,11 +6,12 @@ import tempfile
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import BinaryIO
+from io import BytesIO
 
 import rich
 import trio
 from fastapi import FastAPI, UploadFile, HTTPException, Request, Response, Form
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from rich.logging import RichHandler
 
@@ -31,6 +32,8 @@ from tagflow import (
     text,
     attr,
 )
+from docx import Document
+from docx.shared import Pt
 
 logger = logging.getLogger("slop.transcribe")
 
@@ -623,7 +626,7 @@ def interview_header(title: str, interview_id: str):
                     classes="text-2xl/7 font-bold text-gray-900 sm:truncate sm:text-3xl sm:tracking-tight"
                 ):
                     text(title)
-            with tag.div(classes="mt-4 flex shrink-0 md:ml-4 md:mt-0"):
+            with tag.div(classes="mt-4 flex shrink-0 gap-4 md:ml-4 md:mt-0"):
                 with tag.form(
                     action=f"/interview/{interview_id}/rename",
                     method="post",
@@ -636,6 +639,11 @@ def interview_header(title: str, interview_id: str):
                         classes="inline-flex items-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50",
                     ):
                         text("Rename")
+                with tag.a(
+                    href=f"/interview/{interview_id}/export",
+                    classes="inline-flex items-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50",
+                ):
+                    text("Export DOCX")
 
 
 @app.get("/interview/{interview_id}/segment/{segment_index}")
@@ -1173,6 +1181,47 @@ async def rename_interview(interview_id: str, new_name: str = Form(...)):
     INTERVIEWS.put(interview_id, interview)
 
     return RedirectResponse(url=f"/interview/{interview_id}", status_code=303)
+
+
+@app.get("/interview/{interview_id}/export")
+async def export_interview(interview_id: str):
+    """Export the interview as a DOCX file."""
+    if not (interview := INTERVIEWS.get(interview_id)):
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    # Create a new document
+    doc = Document()
+
+    # Add title
+    title = doc.add_heading(interview.filename, level=1)
+    title.runs[0].font.size = Pt(16)
+
+    # Add each segment
+    for segment in interview.segments:
+        # Add timestamp as a subheading
+        doc.add_heading(f"{segment.start_time} - {segment.end_time}", level=2).runs[
+            0
+        ].font.size = Pt(12)
+
+        # Add utterances
+        for utterance in segment.utterances:
+            p = doc.add_paragraph()
+            speaker_run = p.add_run(f"{utterance.speaker}: ")
+            speaker_run.bold = True
+            p.add_run(utterance.text)
+
+    # Save to BytesIO
+    docx_bytes = BytesIO()
+    doc.save(docx_bytes)
+    docx_bytes.seek(0)
+
+    # Return as downloadable file
+    filename = f"{interview.filename.replace(' ', '_')}.docx"
+    return StreamingResponse(
+        docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def main():
