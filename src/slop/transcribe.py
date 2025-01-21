@@ -74,6 +74,10 @@ class Interview(BaseModel):
     filename: str
     file_uri: str
     audio_hash: str | None = None  # Hash of the processed audio file
+    duration: str = Field(
+        default="00:00:00",
+        description="Total duration of the interview (HH:MM:SS)",
+    )
     current_position: str = Field(
         default="00:00:00",
         description="Current position in the interview (HH:MM:SS)",
@@ -252,21 +256,61 @@ def layout(title: str):
             yield
 
 
+def time_to_seconds(time_str: str) -> int:
+    """Convert HH:MM:SS to total seconds."""
+    h, m, s = map(int, time_str.split(":"))
+    return h * 3600 + m * 60 + s
+
+
+def calculate_progress(current: str, total: str) -> int:
+    """Calculate progress percentage."""
+    current_secs = time_to_seconds(current)
+    total_secs = time_to_seconds(total)
+    if total_secs == 0:
+        return 0
+    return int((current_secs / total_secs) * 100)
+
+
 @app.get("/")
 async def home():
     """
     Renders the home page with an upload area.
     """
     with layout("Home"):
-        with tag.nav(classes="flex justify-between items-center p-4"):
-            for interview in INTERVIEWS.values():
-                with tag.a(
-                    href=f"/interview/{interview.id}",
-                    classes="text-blue-500 hover:text-blue-600",
-                ):
-                    text(interview.filename)
-        with tag.div(classes="prose mx-auto"):
-            upload_area()
+        with tag.div(classes="max-w-4xl mx-auto p-4"):
+            with tag.div(classes="mb-8"):
+                with tag.h1(classes="text-2xl font-bold mb-4"):
+                    text("Interviews")
+
+                with tag.div(classes="space-y-4"):
+                    for interview in INTERVIEWS.values():
+                        progress = calculate_progress(
+                            interview.current_position, interview.duration
+                        )
+                        with tag.div(classes="border rounded-lg p-4 hover:bg-gray-50"):
+                            with tag.a(
+                                href=f"/interview/{interview.id}",
+                                classes="block",
+                            ):
+                                with tag.div(
+                                    classes="flex justify-between items-center mb-2"
+                                ):
+                                    with tag.span(classes="font-medium"):
+                                        text(interview.filename)
+                                    with tag.span(classes="text-gray-500 text-sm"):
+                                        text(
+                                            f"{interview.current_position} / {interview.duration}"
+                                        )
+
+                                with tag.div(classes="bg-gray-200 rounded-full h-2"):
+                                    with tag.div(
+                                        classes="bg-blue-600 rounded-full h-2 transition-all",
+                                        style=f"width: {progress}%",
+                                    ):
+                                        pass
+
+            with tag.div(classes="prose mx-auto"):
+                upload_area()
 
 
 async def process_audio(input_path: Path) -> bytes:
@@ -317,6 +361,9 @@ async def upload_audio(audio: UploadFile):
         tmp_path = Path(tmp.name)
 
         try:
+            # Get audio duration
+            duration = await get_audio_duration(tmp_path)
+
             # Process and store the audio
             processed_audio = await process_audio(tmp_path)
             audio_hash = BLOBS.put(processed_audio, "audio/ogg")
@@ -332,6 +379,7 @@ async def upload_audio(audio: UploadFile):
                 filename=audio.filename,
                 file_uri=file.uri,
                 audio_hash=audio_hash,
+                duration=duration,
             )
             INTERVIEWS.put(interview_id, interview)
         finally:
@@ -943,6 +991,37 @@ def increment_time(time_str: str, seconds: int) -> str:
     h, remainder = divmod(total_seconds, 3600)
     m, s_ = divmod(remainder, 60)
     return f"{h:02d}:{m:02d}:{s_:02d}"
+
+
+async def get_audio_duration(input_path: Path) -> str:
+    """
+    Get the duration of an audio file using ffprobe.
+    Returns duration in HH:MM:SS format.
+    """
+    process = await trio.run_process(
+        [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(input_path),
+        ],
+        capture_stdout=True,
+        capture_stderr=True,
+    )
+
+    if process.returncode != 0:
+        stderr = process.stderr.decode("utf-8", errors="replace")
+        raise RuntimeError(f"FFprobe failed: {stderr}")
+
+    duration_secs = float(process.stdout.decode().strip())
+    hours = int(duration_secs // 3600)
+    minutes = int((duration_secs % 3600) // 60)
+    seconds = int(duration_secs % 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def main():
