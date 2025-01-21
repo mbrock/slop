@@ -794,17 +794,35 @@ async def view_interview(interview_id: str):
                     for i, segment in enumerate(interview.segments):
                         await view_segment(interview_id, i)
 
-            with tag.button(
-                classes="border-t-4 border-gray-400 flex items-center w-full py-2 px-4 mt-4 underline",
-                **{
-                    "hx-post": f"/interview/{interview_id}/transcribe-next",
-                    "hx-target": "#segments",
-                    "hx-swap": "beforeend",
-                },
-            ):
-                text("Transcribe...")
-                with tag.span(classes="htmx-indicator ml-2"):
-                    text("Transcribing...")
+            # Progress bar and transcribe button section
+            with tag.div(classes="border-t-4 border-gray-400 mt-4"):
+                with tag.div(classes="flex items-center justify-between p-4"):
+                    # Progress info
+                    with tag.div(classes="flex items-center gap-2"):
+                        with tag.span(classes="text-gray-500 text-sm"):
+                            text(f"{interview.current_position} / {interview.duration}")
+                        with tag.div(classes="w-48 bg-gray-200 rounded-full h-2"):
+                            progress = calculate_progress(
+                                interview.current_position, interview.duration
+                            )
+                            with tag.div(
+                                classes="bg-blue-600 rounded-full h-2 transition-all",
+                                style=f"width: {progress}%",
+                            ):
+                                pass
+
+                    # Transcribe button
+                    with tag.button(
+                        classes="flex items-center gap-2 text-blue-600 hover:text-blue-800 font-medium",
+                        **{
+                            "hx-post": f"/interview/{interview_id}/transcribe-next",
+                            "hx-target": "#segments",
+                            "hx-swap": "beforeend",
+                        },
+                    ):
+                        text("Transcribe next segment")
+                        with tag.span(classes="htmx-indicator"):
+                            text("🤔")
 
 
 async def extract_segment(input_path: Path, start_time: str, end_time: str) -> bytes:
