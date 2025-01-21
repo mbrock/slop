@@ -209,10 +209,10 @@ def layout(title: str):
             # Tailwind + HTMX scripts
             with tag.script(src="https://cdn.tailwindcss.com"):
                 pass
-            with tag.script(src="https://unpkg.com/htmx.org@1.9.10"):
+            # with tag.script():
+            #     text("""htmx.config = { "globalViewTransitions": true }""")
+            with tag.script(src="https://unpkg.com/htmx.org@2.0.4"):
                 pass
-            with tag.script():
-                text("""htmx.config = { "globalViewTransitions": true }""")
             with tag.script():
                 text(
                     """
@@ -226,6 +226,21 @@ def layout(title: str):
                     """
                 )
             live.script_tag()
+
+            # Add CSS for loading indicator
+            with tag.style():
+                text("""
+                    .htmx-indicator {
+                        opacity: 0;
+                        transition: opacity 200ms ease-in;
+                    }
+                    .htmx-request .htmx-indicator {
+                        opacity: 1
+                    }
+                    .htmx-request.htmx-indicator {
+                        opacity: 1
+                    }
+                """)
 
         with tag.body(classes="bg-stone-300 min-h-screen font-serif p-4"):
             yield
@@ -254,7 +269,7 @@ async def process_audio(input_path: Path) -> bytes:
             "-c:a",
             "libvorbis",  # Vorbis codec
             "-q:a",
-            "6",  # Quality level (0-10, 4 is good)
+            "8",  # Quality level (0-10, 4 is good)
             "-f",
             "ogg",  # Output format
             "pipe:1",  # Output to stdout
@@ -314,6 +329,37 @@ async def upload_audio(audio: UploadFile):
     return response
 
 
+@app.get("/interview/{interview_id}/segment/{segment_index}")
+async def view_segment(interview_id: str, segment_index: int):
+    """Renders a single segment as a partial view."""
+    if not (interview := INTERVIEWS.get(interview_id)):
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    try:
+        segment = interview.segments[segment_index]
+    except IndexError:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    with tag.div(classes="flex flex-col gap-2 bg-stone-100 p-4 rounded-lg"):
+        with tag.div(classes="flex items-center gap-2"):
+            if segment.audio_hash:
+                with tag.audio(
+                    src=f"/audio/{segment.audio_hash}",
+                    controls=True,
+                    classes="h-8",
+                    preload="metadata",
+                ):
+                    pass
+
+        # Display each utterance
+        with tag.div(classes="flex flex-wrap gap-4 pl-4"):
+            for utterance in segment.utterances:
+                with tag.span(**{"data-speaker": utterance.speaker}):
+                    if utterance.speaker == "S1":
+                        classes("font-bold")
+                    text(utterance.text)
+
+
 @app.get("/interview/{interview_id}")
 async def view_interview(interview_id: str):
     """
@@ -338,42 +384,22 @@ async def view_interview(interview_id: str):
                     ):
                         pass
 
-            if interview.segments:
-                with tag.div(classes="flex flex-col gap-8"):
-                    for segment in interview.segments:
-                        with tag.div(
-                            classes="flex flex-col gap-2 bg-stone-100 p-4 rounded-lg"
-                        ):
-                            with tag.div(classes="flex items-center gap-2"):
-                                if segment.audio_hash:
-                                    with tag.audio(
-                                        src=f"/audio/{segment.audio_hash}",
-                                        controls=True,
-                                        classes="h-8",
-                                        preload="metadata",
-                                    ):
-                                        pass
+            with tag.div(id="segments", classes="flex flex-col gap-8"):
+                if interview.segments:
+                    for i, segment in enumerate(interview.segments):
+                        await view_segment(interview_id, i)
 
-                            # Display each utterance
-                            with tag.div(classes="flex flex-wrap gap-4 pl-4"):
-                                for utterance in segment.utterances:
-                                    with tag.span(
-                                        **{"data-speaker": utterance.speaker}
-                                    ):
-                                        if utterance.speaker == "S1":
-                                            classes("font-bold")
-                                        text(utterance.text)
-
-            with tag.form(
-                action=f"/interview/{interview_id}/transcribe-next",
-                method="post",
-                classes="mb-4",
+            with tag.button(
+                classes="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600",
+                **{
+                    "hx-post": f"/interview/{interview_id}/transcribe-next",
+                    "hx-target": "#segments",
+                    "hx-swap": "beforeend",
+                },
             ):
-                with tag.button(
-                    type="submit",
-                    classes="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600",
-                ):
-                    text("Transcribe Next Segment")
+                text("Transcribe Next Segment")
+                with tag.span(classes="htmx-indicator ml-2"):
+                    text("Transcribing...")
 
 
 async def extract_segment(input_path: Path, start_time: str, end_time: str) -> bytes:
@@ -396,7 +422,7 @@ async def extract_segment(input_path: Path, start_time: str, end_time: str) -> b
             "-c:a",
             "libvorbis",  # Vorbis codec
             "-q:a",
-            "6",  # Quality level
+            "8",  # Quality level
             "-f",
             "ogg",  # Output format
             "pipe:1",  # Output to stdout
@@ -496,10 +522,8 @@ def parse_transcription_xml(xml_text: str) -> list[Utterance]:
 @app.post("/interview/{interview_id}/transcribe-next")
 async def transcribe_next_segment(interview_id: str):
     """
-    Transcribe the next audio segment (2 minutes) for the given interview:
-    1. Extracts the next segment from the stored audio
-    2. Uploads segment to Gemini for transcription
-    3. Parses the transcription XML and appends it to the interview
+    Transcribe the next audio segment (2 minutes) for the given interview.
+    Returns just the new segment as a partial view.
     """
     if not (interview := INTERVIEWS.get(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -557,9 +581,7 @@ async def transcribe_next_segment(interview_id: str):
                     )
                     parts.extend(
                         [
-                            Part(
-                                text="For context, here is the previous segment's audio and transcription:"
-                            ),
+                            Part(text="Previous segment's audio and transcription:"),
                             Part(
                                 fileData=FileData(
                                     fileUri=prev_file.uri, mimeType="audio/ogg"
@@ -575,26 +597,26 @@ async def transcribe_next_segment(interview_id: str):
                     )
 
             # Add current segment's audio and instructions
-            parts.extend(
-                [
-                    Part(text="Please transcribe this audio segment:"),
-                    Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
-                    Part(
-                        text="""Format your response as XML in the following format:
+            parts = [
+                *parts,
+                Part(text="New audio segment:"),
+                Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
+                Part(
+                    text="""Format your response as XML in the following format:
 
 <transcript>
   <utterance speaker="S1" start="00:00:03">Hello, how are you?</utterance>
-  <utterance speaker="S2" start="00:00:05">I'm doing well, thank you.</utterance>
+  <utterance speaker="S2" start="00:00:05">I'm doing— I'm— yeah, I'm great.</utterance>
 </transcript>
 
 1. Use speaker IDs like S1, S2, etc.
 2. Include timestamps in HH:MM:SS format
 3. Output only valid XML, no extra text.
 4. Maintain consistent speaker identities with the previous segment's context.
+5. Use em dashes (—) for interruptions and disfluencies.
 """
-                    ),
-                ]
-            )
+                ),
+            ]
 
             # Request transcription
             request = GenerateRequest(
@@ -640,13 +662,12 @@ async def transcribe_next_segment(interview_id: str):
             # Append segment to interview and save
             interview.segments.append(segment)
             INTERVIEWS.put(interview.id, interview)
+
+            # Return the new segment as a partial view
+            return await view_segment(interview_id, len(interview.segments) - 1)
         finally:
             tmp_path.unlink()
             await client.delete_file(file.name)
-
-    response = RedirectResponse(url=f"/interview/{interview_id}")
-    response.status_code = 303  # See Other
-    return response
 
 
 def increment_time(time_str: str, seconds: int) -> str:
