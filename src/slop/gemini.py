@@ -19,6 +19,9 @@ from httpx_sse import ServerSentEvent, aconnect_sse
 from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler
 from pydantic.alias_generators import to_camel
 import rich
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class FunctionParameter(BaseModel):
@@ -346,11 +349,13 @@ class GeminiClient:
                 if display_name
                 else {"file": {}}
             )
+            logger.info(f"Uploading file: {metadata}")
             response = await client.post(
                 url,
                 params={"key": self.api_key},
                 headers=headers,
                 json=metadata,
+                timeout=60 * 5,
             )
             response.raise_for_status()
 
@@ -369,6 +374,7 @@ class GeminiClient:
                 upload_url,
                 headers=headers,
                 content=data,
+                timeout=60 * 5,
             )
             response.raise_for_status()
             return File.model_validate(response.json()["file"])

@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import os
 import re
 import sqlite3
 import tempfile
@@ -181,8 +182,10 @@ class BlobStore:
 
 
 # Initialize the stores
-INTERVIEWS = Store(Path("data/interviews.db"), Interview)
-BLOBS = BlobStore(Path("data/blobs.db"))
+data_dir = os.getenv("IEVA_DATA", "/data")
+
+INTERVIEWS = Store(Path(data_dir, "interviews.db"), Interview)
+BLOBS = BlobStore(Path(data_dir, "blobs.db"))
 
 
 @asynccontextmanager
@@ -322,6 +325,7 @@ async def process_audio(input_path: Path) -> bytes:
     Convert audio to Ogg Vorbis format using ffmpeg.
     Returns the processed audio as bytes.
     """
+    logger.info(f"Processing audio file: {input_path}")
     process = await trio.run_process(
         [
             "ffmpeg",
@@ -339,6 +343,7 @@ async def process_audio(input_path: Path) -> bytes:
         capture_stderr=True,
     )
 
+    logger.info(f"FFmpeg process {process.returncode}")
     if process.returncode != 0:
         stderr = process.stderr.decode("utf-8", errors="replace")
         raise RuntimeError(f"FFmpeg failed: {stderr}")
@@ -1296,11 +1301,11 @@ def main():
         level=logging.INFO,
         format="%(message)s",
         datefmt="[%X]",
-        handlers=[RichHandler(rich_tracebacks=True)],
+        #        handlers=[RichHandler(rich_tracebacks=True)],
     )
 
     config = hypercorn.config.Config()
-    config.bind = ["localhost:8000"]
+    config.bind = ["0.0.0.0:8080"]
     config.worker_class = "trio"
 
     trio.run(hypercorn.trio.serve, app, config)
