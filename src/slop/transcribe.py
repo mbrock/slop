@@ -6,7 +6,6 @@ import sqlite3
 import tempfile
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import BinaryIO
 from io import BytesIO
 
 import rich
@@ -14,7 +13,6 @@ import trio
 from fastapi import FastAPI, UploadFile, HTTPException, Request, Response, Form
 from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from rich.logging import RichHandler
 
 from slop.gemini import (
     Content,
@@ -23,7 +21,7 @@ from slop.gemini import (
     GeminiClient,
     Part,
 )
-from slop.views import upload_area
+from slop.views import upload_area, speaker_classes
 from tagflow import (
     DocumentMiddleware,
     Live,
@@ -75,7 +73,6 @@ class Interview(BaseModel):
 
     id: str
     filename: str
-    file_uri: str
     audio_hash: str | None = None  # Hash of the processed audio file
     duration: str = Field(
         default="00:00:00",
@@ -357,9 +354,8 @@ async def upload_audio(audio: UploadFile):
     Endpoint to handle file upload:
     1. Saves the file temporarily
     2. Processes and stores the audio in BlobStore
-    3. Uploads to Gemini
-    4. Creates an Interview record
-    5. Redirects to the interview page
+    3. Creates an Interview record
+    4. Redirects to the interview page
     """
     with tempfile.NamedTemporaryFile(
         delete=False, suffix=Path(audio.filename).suffix
@@ -377,16 +373,11 @@ async def upload_audio(audio: UploadFile):
             processed_audio = await process_audio(tmp_path)
             audio_hash = BLOBS.put(processed_audio, "audio/ogg")
 
-            # Upload to Gemini
-            client = GeminiClient()
-            file = await client.upload_file(str(tmp_path), display_name=audio.filename)
-
             # Create interview record
             interview_id = str(len(list(INTERVIEWS.values())) + 1)
             interview = Interview(
                 id=interview_id,
                 filename=audio.filename,
-                file_uri=file.uri,
                 audio_hash=audio_hash,
                 duration=duration,
             )
@@ -718,8 +709,7 @@ async def view_segment(interview_id: str, segment_index: int):
             with tag.div(classes="flex flex-wrap gap-4"):
                 for utterance in segment.utterances:
                     with tag.span(**{"data-speaker": utterance.speaker}):
-                        if utterance.speaker == "S1":
-                            classes("font-bold")
+                        classes(speaker_classes(utterance.speaker))
                         text(utterance.text)
 
 
@@ -1232,8 +1222,7 @@ async def update_segment(
     with tag.div(classes="flex flex-wrap gap-4"):
         for utterance in segment.utterances:
             with tag.span(**{"data-speaker": utterance.speaker}):
-                if utterance.speaker == "S1":
-                    classes("font-bold")
+                classes(speaker_classes(utterance.speaker))
                 text(utterance.text)
 
 

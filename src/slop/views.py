@@ -1,4 +1,21 @@
-from tagflow import tag, text
+from tagflow import tag, text, classes
+
+
+def speaker_classes(speaker: str) -> str:
+    """Return the appropriate CSS classes for a given speaker."""
+    match speaker:
+        case "S1":
+            return "font-bold"  # Bold for S1
+        case "S2":
+            return ""  # Default style for S2
+        case "S3":
+            return "bg-blue-50"  # Subtle blue background for S3
+        case "S4":
+            return "bg-green-50"  # Subtle green background for S4
+        case "S5":
+            return "bg-orange-50"  # Subtle orange background for S5
+        case _:
+            return ""  # Default style for unknown speakers
 
 
 def upload_area(target: str):
@@ -52,7 +69,7 @@ def upload_area(target: str):
                 classes="mt-4 hidden",
             ):
                 with tag.div(classes="flex justify-between text-sm text-gray-600 mb-1"):
-                    with tag.span():
+                    with tag.span(id="progress-status"):
                         text("Uploading...")
                     with tag.span(id="progress-text"):
                         text("0%")
@@ -77,10 +94,16 @@ def upload_area(target: str):
                     // Update progress bar and text
                     htmx.find('#progress-bar').style.width = percent + '%';
                     htmx.find('#progress-text').innerText = percent + '%';
+                    
+                    // If upload is complete, show processing message
+                    if (percent === 100) {
+                        htmx.find('#progress-status').innerText = 'Processing...';
+                    }
                 });
                 
                 htmx.on('#upload-form', 'htmx:beforeRequest', function(evt) {
                     // Show progress container when upload starts
                     htmx.find('#progress-container').classList.remove('hidden');
+                    htmx.find('#progress-status').innerText = 'Uploading...';
                 });
             """)
