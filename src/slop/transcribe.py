@@ -82,6 +82,10 @@ class Interview(BaseModel):
         default="00:00:00",
         description="Current position in the interview (HH:MM:SS)",
     )
+    context_segments: int = Field(
+        default=1,
+        description="Number of previous segments to include as context for transcription",
+    )
     segments: list[Segment] = []
 
 
@@ -654,6 +658,29 @@ def interview_header(title: str, interview_id: str):
                 ):
                     text(title)
             with tag.div(classes="mt-4 flex shrink-0 gap-4 md:ml-4 md:mt-0"):
+                # Context segments control
+                with tag.form(
+                    action=f"/interview/{interview_id}/context-segments",
+                    method="post",
+                    classes="flex items-center gap-2",
+                ):
+                    with tag.label(classes="text-sm text-gray-600"):
+                        text("Context segments:")
+                    with tag.input(
+                        type="number",
+                        name="context_segments",
+                        min="0",
+                        max="5",
+                        value=str(INTERVIEWS.get(interview_id).context_segments),
+                        classes="w-16 px-2 py-1 text-sm border rounded",
+                        **{
+                            "hx-post": f"/interview/{interview_id}/context-segments",
+                            "hx-trigger": "change",
+                            "hx-swap": "none",
+                        },
+                    ):
+                        pass
+
                 with tag.form(
                     action=f"/interview/{interview_id}/rename",
                     method="post",
@@ -955,11 +982,17 @@ async def transcribe_audio_segment(
     interview_id: str,
     start_time: str,
     end_time: str,
-    prev_segment: Segment | None = None,
+    context_segments: list[Segment] | None = None,
 ) -> list[Utterance]:
     """
     Transcribe an audio segment using Gemini.
     Returns the transcribed utterances.
+
+    Args:
+        interview_id: The ID of the interview
+        start_time: Start time in HH:MM:SS format
+        end_time: End time in HH:MM:SS format
+        context_segments: List of previous segments to use as context, ordered from oldest to newest
     """
     if not (interview := INTERVIEWS.get(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -989,30 +1022,34 @@ async def transcribe_audio_segment(
 
             parts = []
 
-            # If there's a previous segment, include its audio and transcription for context
-            if prev_segment and prev_segment.audio_hash:
-                prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
-                prev_file = await client.upload_bytes(
-                    prev_audio_data,
-                    mime_type="audio/ogg",
-                    display_name=f"previous_segment_{prev_segment.start_time}",
-                )
-                parts.extend(
-                    [
-                        Part(text="Previous segment's audio and transcription:"),
-                        Part(
-                            fileData=FileData(
-                                fileUri=prev_file.uri, mimeType="audio/ogg"
-                            )
-                        ),
-                        Part(
-                            text="".join(
-                                f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
-                                for u in prev_segment.utterances
-                            )
-                        ),
-                    ]
-                )
+            # Include previous segments as context if available
+            if context_segments:
+                for i, prev_segment in enumerate(context_segments):
+                    if prev_segment.audio_hash:
+                        prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
+                        prev_file = await client.upload_bytes(
+                            prev_audio_data,
+                            mime_type="audio/ogg",
+                            display_name=f"context_segment_{i}_{prev_segment.start_time}",
+                        )
+                        parts.extend(
+                            [
+                                Part(
+                                    text=f"Context segment {i + 1} ({prev_segment.start_time} - {prev_segment.end_time}):"
+                                ),
+                                Part(
+                                    fileData=FileData(
+                                        fileUri=prev_file.uri, mimeType="audio/ogg"
+                                    )
+                                ),
+                                Part(
+                                    text="".join(
+                                        f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
+                                        for u in prev_segment.utterances
+                                    )
+                                ),
+                            ]
+                        )
 
             # Add current segment's audio and instructions
             parts.extend(
@@ -1029,7 +1066,7 @@ async def transcribe_audio_segment(
 
 1. Use speaker IDs like S1, S2, etc.
 2. Output only valid XML, no extra text.
-3. Maintain consistent speaker identities with the previous segment's context.
+3. Maintain consistent speaker identities with the previous segments' context.
 4. Use em dashes (—) for interruptions and disfluencies.
 """
                     ),
@@ -1078,8 +1115,11 @@ async def transcribe_next_segment(interview_id: str):
     if not (interview := INTERVIEWS.get(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
-    # Get the previous segment for context if available
-    prev_segment = interview.segments[-1] if interview.segments else None
+    # Get context segments
+    context_segments = []
+    if interview.segments:
+        start_idx = max(0, len(interview.segments) - interview.context_segments)
+        context_segments = interview.segments[start_idx:]
 
     # Calculate segment times
     start_time = interview.current_position
@@ -1090,7 +1130,7 @@ async def transcribe_next_segment(interview_id: str):
         interview_id,
         start_time,
         end_time,
-        prev_segment,
+        context_segments,
     )
 
     # Create and save the new segment
@@ -1123,15 +1163,18 @@ async def retranscribe_segment(interview_id: str, segment_index: int):
     except IndexError:
         raise HTTPException(status_code=404, detail="Segment not found")
 
-    # Get the previous segment for context if available
-    prev_segment = interview.segments[segment_index - 1] if segment_index > 0 else None
+    # Get context segments
+    context_segments = []
+    if segment_index > 0:
+        start_idx = max(0, segment_index - interview.context_segments)
+        context_segments = interview.segments[start_idx:segment_index]
 
     # Transcribe the segment
     utterances, segment_hash = await transcribe_audio_segment(
         interview_id,
         segment.start_time,
         segment.end_time,
-        prev_segment,
+        context_segments,
     )
 
     # Update the segment
@@ -1277,6 +1320,20 @@ async def export_interview(interview_id: str):
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.post("/interview/{interview_id}/context-segments")
+async def update_context_segments(interview_id: str, context_segments: int = Form(...)):
+    """Updates the number of context segments to use for transcription."""
+    if not (interview := INTERVIEWS.get(interview_id)):
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    interview.context_segments = max(
+        0, min(5, context_segments)
+    )  # Clamp between 0 and 5
+    INTERVIEWS.put(interview_id, interview)
+
+    return Response(status_code=204)  # No content response
 
 
 def main():
