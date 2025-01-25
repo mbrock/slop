@@ -738,6 +738,7 @@ async def view_segment(interview_id: str, segment_index: int):
                     "hx-post": f"/interview/{interview_id}/segment/{segment_index}/improve-speakers",
                     "hx-target": f"#segment-{segment_index}",
                     "hx-swap": "outerHTML",
+                    "onclick": "const hint = prompt('Enter any hints about the speakers (optional):'); if (hint !== null) { this.setAttribute('hx-vals', JSON.stringify({hint})); return true; } return false;",
                 },
             )
 
@@ -1197,7 +1198,9 @@ async def retranscribe_segment(interview_id: str, segment_index: int):
 
 
 @app.post("/interview/{interview_id}/segment/{segment_index}/improve-speakers")
-async def improve_speaker_identification(interview_id: str, segment_index: int):
+async def improve_speaker_identification(
+    interview_id: str, segment_index: int, hint: str | None = Form(None)
+):
     """Improve speaker identification for a specific segment using Gemini."""
     if not (interview := INTERVIEWS.get(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -1274,7 +1277,9 @@ async def improve_speaker_identification(interview_id: str, segment_index: int):
                     )
                 ),
                 Part(
-                    text="""Please improve the speaker identification in this segment.
+                    text=f"""Please improve the speaker identification in this segment.
+{f"User hint about the speakers: {hint}" if hint else ""}
+
 Format your response as XML with the same utterances but with corrected speaker IDs:
 
 <transcript>
