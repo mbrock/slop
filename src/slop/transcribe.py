@@ -731,6 +731,16 @@ async def view_segment(interview_id: str, segment_index: int):
                 },
             )
 
+            # Add improve speakers button
+            button_view(
+                "Improve Speakers",
+                **{
+                    "hx-post": f"/interview/{interview_id}/segment/{segment_index}/improve-speakers",
+                    "hx-target": f"#segment-{segment_index}",
+                    "hx-swap": "outerHTML",
+                },
+            )
+
         # Display each utterance
         with tag.div(id=f"segment-content-{segment_index}", classes="w-full"):
             with tag.div(classes="flex flex-wrap gap-4"):
@@ -1184,6 +1194,139 @@ async def retranscribe_segment(interview_id: str, segment_index: int):
 
     # Return the updated segment view
     return await view_segment(interview_id, segment_index)
+
+
+@app.post("/interview/{interview_id}/segment/{segment_index}/improve-speakers")
+async def improve_speaker_identification(interview_id: str, segment_index: int):
+    """Improve speaker identification for a specific segment using Gemini."""
+    if not (interview := INTERVIEWS.get(interview_id)):
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    try:
+        segment = interview.segments[segment_index]
+    except IndexError:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    # Get context segments
+    context_segments = []
+    if segment_index > 0:
+        start_idx = max(0, segment_index - interview.context_segments)
+        context_segments = interview.segments[start_idx:segment_index]
+
+    # Get the segment audio
+    if not segment.audio_hash:
+        raise HTTPException(status_code=400, detail="Segment has no audio")
+
+    audio_data, _ = BLOBS.get(segment.audio_hash)
+
+    # Upload to Gemini
+    client = GeminiClient()
+    file = await client.upload_bytes(
+        audio_data,
+        mime_type="audio/ogg",
+        display_name=f"segment_{segment.start_time}",
+    )
+
+    try:
+        parts = []
+
+        # Include previous segments as context
+        if context_segments:
+            for i, prev_segment in enumerate(context_segments):
+                if prev_segment.audio_hash:
+                    prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
+                    prev_file = await client.upload_bytes(
+                        prev_audio_data,
+                        mime_type="audio/ogg",
+                        display_name=f"context_segment_{i}_{prev_segment.start_time}",
+                    )
+                    parts.extend(
+                        [
+                            Part(
+                                text=f"Context segment {i + 1} ({prev_segment.start_time} - {prev_segment.end_time}):"
+                            ),
+                            Part(
+                                fileData=FileData(
+                                    fileUri=prev_file.uri, mimeType="audio/ogg"
+                                )
+                            ),
+                            Part(
+                                text="".join(
+                                    f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
+                                    for u in prev_segment.utterances
+                                )
+                            ),
+                        ]
+                    )
+
+        # Add current segment with its current transcription
+        parts.extend(
+            [
+                Part(
+                    text="Current segment that needs speaker identification improvement:"
+                ),
+                Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
+                Part(
+                    text="Current transcription:\n"
+                    + "".join(
+                        f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
+                        for u in segment.utterances
+                    )
+                ),
+                Part(
+                    text="""Please improve the speaker identification in this segment.
+Format your response as XML with the same utterances but with corrected speaker IDs:
+
+<transcript>
+  <utterance speaker="S1">Hello, how are you?</utterance>
+  <utterance speaker="S2">I'm doing great, thanks.</utterance>
+</transcript>
+
+Guidelines:
+1. Keep the same text content but fix speaker assignments
+2. Use consistent speaker IDs (S1, S2, etc.)
+3. Consider voice characteristics and context
+4. S1 should be the interviewer
+5. Output only valid XML, no extra text
+"""
+                ),
+            ]
+        )
+
+        # Request improved speaker identification
+        request = GenerateRequest(contents=[Content(role="user", parts=parts)])
+        response = await client.generate_content_sync(request)
+        if not response.candidates:
+            raise HTTPException(
+                status_code=500, detail="Failed to improve speaker identification"
+            )
+
+        # Extract the text content
+        full_text = response.candidates[0].content.parts[0].text
+
+        # Find the XML
+        xml_match = re.search(r"<transcript>(.*?)</transcript>", full_text, re.DOTALL)
+        if not xml_match:
+            raise HTTPException(
+                status_code=500, detail="Failed to find transcription XML"
+            )
+
+        xml_text = xml_match.group(0)
+        utterances = parse_transcription_xml(xml_text)
+        if not utterances:
+            raise HTTPException(
+                status_code=500, detail="Failed to parse transcription XML"
+            )
+
+        # Update the segment
+        segment.utterances = utterances
+        INTERVIEWS.put(interview_id, interview)
+
+        # Return the updated segment view
+        return await view_segment(interview_id, segment_index)
+
+    finally:
+        await client.delete_file(file.name)
 
 
 def increment_time(time_str: str, seconds: int) -> str:
