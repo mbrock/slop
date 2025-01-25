@@ -1067,7 +1067,7 @@ async def transcribe_audio_segment(
 1. Use speaker IDs like S1, S2, etc.
 2. Output only valid XML, no extra text.
 3. Maintain consistent speaker identities with the previous segments' context.
-4. Use em dashes (—) for interruptions and disfluencies.
+4. Pay attention to the voice and context to get the diarization correct.
 """
                     ),
                 ]
