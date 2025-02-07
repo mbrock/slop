@@ -109,10 +109,26 @@ class Content(BaseModel):
     parts: List[Part]
 
 
+class GenerationConfig(BaseModel):
+    stopSequences: Optional[List[str]] = None
+    responseMimeType: Optional[str] = None
+    candidateCount: Optional[int] = Field(default=1, ge=1, le=1)
+    maxOutputTokens: Optional[int] = None
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    topP: Optional[float] = None
+    topK: Optional[int] = None
+    presencePenalty: Optional[float] = None
+    frequencyPenalty: Optional[float] = None
+    responseLogprobs: Optional[bool] = None
+    logprobs: Optional[int] = None
+    enableEnhancedCivicAnswers: Optional[bool] = None
+
+
 class GenerateRequest(BaseModel):
     contents: Union[Content, List[Content]]
     tools: Optional[List[Tool]] = None
     toolConfig: Optional[ToolConfig] = None
+    generationConfig: Optional[GenerationConfig] = None
 
 
 class MovieSearchParams(BaseModel):
@@ -215,21 +231,6 @@ class GenerateContentResponse(BaseModel):
     promptFeedback: Optional[PromptFeedback] = None
     usageMetadata: Optional[UsageMetadata] = None
     modelVersion: Optional[str] = None
-
-
-class GenerationConfig(BaseModel):
-    stopSequences: Optional[List[str]] = None
-    responseMimeType: Optional[str] = None
-    candidateCount: Optional[int] = Field(default=1, ge=1, le=1)
-    maxOutputTokens: Optional[int] = None
-    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    topP: Optional[float] = None
-    topK: Optional[int] = None
-    presencePenalty: Optional[float] = None
-    frequencyPenalty: Optional[float] = None
-    responseLogprobs: Optional[bool] = None
-    logprobs: Optional[int] = None
-    enableEnhancedCivicAnswers: Optional[bool] = None
 
 
 class FileState(str, Enum):
@@ -461,7 +462,8 @@ class GeminiClient:
     async def generate_content_sync(
         self,
         request: GenerateRequest,
-        model: str = "gemini-2.0-flash-exp",
+        #    model: str = "gemini-2.0-flash-exp",
+        model: str = "gemini-2.0-pro-exp-02-05",
     ) -> GenerateContentResponse:
         """Non-streaming version of generate_content"""
         url = f"{self.base_url}/v1beta/models/{model}:generateContent"

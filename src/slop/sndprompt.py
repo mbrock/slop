@@ -9,7 +9,14 @@ from fastapi import HTTPException
 import rich
 import trio
 
-from slop.gemini import Content, FileData, GeminiClient, GenerateRequest, Part
+from slop.gemini import (
+    Content,
+    FileData,
+    GeminiClient,
+    GenerateRequest,
+    GenerationConfig,
+    Part,
+)
 from slop.models import BLOBS, INTERVIEWS, Segment, Utterance
 
 logger = logging.getLogger(__name__)
@@ -69,45 +76,55 @@ async def transcribe_audio_segment(
                             mime_type="audio/ogg",
                             display_name=f"context_segment_{i}_{prev_segment.start_time}",
                         )
+                        parts.append(Part(text=f'<audio id="{i}">'))
+                        parts.append(
+                            Part(
+                                fileData=FileData(
+                                    fileUri=prev_file.uri, mimeType="audio/ogg"
+                                )
+                            )
+                        )
+                        parts.append(Part(text="</audio>"))
                         context_xml = (
-                            f'<contextSegment index="{i+1}" start="{prev_segment.start_time}" end="{prev_segment.end_time}">'
-                            f'<audio fileUri="{prev_file.uri}" mimeType="audio/ogg"/>'
-                            '<utterances>'
+                            f'<transcript id="{i}">'
                             + "".join(
                                 f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
                                 for u in prev_segment.utterances
                             )
-                            + '</utterances>'
-                            '</contextSegment>'
+                            + "</transcript>"
                         )
                         parts.append(Part(text=context_xml))
 
             # Add current segment's audio and instructions
             parts.extend(
                 [
-                    Part(text="New audio segment:"),
+                    Part(text='<audio id="current">'),
                     Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
+                    Part(text="</audio>"),
                     Part(
                         text="""Format your response as XML with the following structure:
 
-<transcript segment="{SEGMENT_NUMBER}">
+<transcript id="current">
   <utterance speaker="S1">Hello, how are you?</utterance>
   <utterance speaker="S2">I'm doing great, thanks.</utterance>
 </transcript>
 
 Instructions:
-1. Only transcribe the new audio provided in this request (ignore context segments).
+1. Only transcribe the new untranscribed audio provided in this request.
 2. Do not wrap individual utterances in additional elements.
 3. Use speaker IDs like S1, S2, etc.
 4. Output only valid XML with no extra text.
-5. Ensure the transcript element includes a 'segment' attribute corresponding to the current segment number.
+5. Ensure the transcript element includes an 'id' attribute with value "current".
 """
                     ),
                 ]
             )
 
             # Request transcription
-            request = GenerateRequest(contents=[Content(role="user", parts=parts)])
+            request = GenerateRequest(
+                contents=[Content(role="user", parts=parts)],
+                generationConfig=GenerationConfig(temperature=0.2),
+            )
             response = await client.generate_content_sync(request)
             if not response.candidates:
                 raise HTTPException(
@@ -119,7 +136,9 @@ Instructions:
 
             # Find the XML with segment attribute
             xml_match = re.search(
-                r"<transcript\s+segment=\"[^\"]+\">(.*?)</transcript>", full_text, re.DOTALL
+                r"<transcript\s+id=\"current\">(.*?)</transcript>",
+                full_text,
+                re.DOTALL,
             )
             if not xml_match:
                 raise HTTPException(
@@ -177,18 +196,25 @@ async def improve_speaker_identification_segment(
                         mime_type="audio/ogg",
                         display_name=f"context_segment_{i}_{prev_segment.start_time}",
                     )
-                    context_xml = (
-                        f'<contextSegment index="{i+1}" start="{prev_segment.start_time}" end="{prev_segment.end_time}">'
-                        f'<audio fileUri="{prev_file.uri}" mimeType="audio/ogg"/>'
-                        '<utterances>'
-                        + "".join(
-                            f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
-                            for u in prev_segment.utterances
+                    parts.append(Part(text=f'<audio id="{i}">'))
+                    parts.append(
+                        Part(
+                            fileData=FileData(
+                                fileUri=prev_file.uri, mimeType="audio/ogg"
+                            )
                         )
-                        + '</utterances>'
-                        '</contextSegment>'
                     )
-                    parts.append(Part(text=context_xml))
+                    parts.append(Part(text="</audio>"))
+                    parts.append(Part(text=f'<transcript id="{i}">'))
+                    parts.append(
+                        Part(
+                            text="".join(
+                                f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
+                                for u in prev_segment.utterances
+                            )
+                        )
+                    )
+                    parts.append(Part(text="</transcript>"))
 
         # Add current segment with its current transcription
         parts.extend(
@@ -196,13 +222,16 @@ async def improve_speaker_identification_segment(
                 Part(
                     text="Current segment that needs speaker identification improvement:"
                 ),
+                Part(text='<audio id="current">'),
                 Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
+                Part(text="</audio>"),
                 Part(
-                    text="Current transcription:\n"
+                    text='<transcript id="current">\n'
                     + "".join(
                         f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
                         for u in current_utterances
                     )
+                    + "\n</transcript>"
                 ),
                 Part(
                     text=f"""Please improve the speaker identification in this segment.
@@ -210,7 +239,7 @@ async def improve_speaker_identification_segment(
 
 Format your response as XML with the following structure:
 
-<transcript segment="current">
+<transcript id="current">
   <utterance speaker="S1">Hello, how are you?</utterance>
   <utterance speaker="S2">I'm doing great, thanks.</utterance>
 </transcript>
@@ -226,7 +255,10 @@ Guidelines:
         )
 
         # Request improved speaker identification
-        request = GenerateRequest(contents=[Content(role="user", parts=parts)])
+        request = GenerateRequest(
+            contents=[Content(role="user", parts=parts)],
+            generationConfig=GenerationConfig(temperature=0.4),
+        )
         response = await client.generate_content_sync(request)
         if not response.candidates:
             raise HTTPException(
@@ -237,7 +269,9 @@ Guidelines:
         full_text = response.candidates[0].content.parts[0].text
 
         # Find the XML with segment attribute
-        xml_match = re.search(r"<transcript\s+segment=\"[^\"]+\">(.*?)</transcript>", full_text, re.DOTALL)
+        xml_match = re.search(
+            r"<transcript\s+id=\"current\">(.*?)</transcript>", full_text, re.DOTALL
+        )
         if not xml_match:
             raise HTTPException(
                 status_code=500, detail="Failed to find transcription XML"
@@ -260,7 +294,7 @@ def parse_transcription_xml(xml_text: str) -> list[Utterance]:
     """
     Parse transcription XML into a list of Utterances.
     Expected format:
-        <transcript>
+        <transcript id="current">
             <utterance speaker="S1">Hello</utterance>
             ...
         </transcript>
