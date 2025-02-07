@@ -97,17 +97,13 @@ async def transcribe_audio_segment(
                         text="""Format your response as XML with the following structure:
 
 <transcript segment="{SEGMENT_NUMBER}">
-  <pair index="1">
-    <utterance speaker="S1">Hello, how are you?</utterance>
-  </pair>
-  <pair index="2">
-    <utterance speaker="S2">I'm doing great, thanks.</utterance>
-  </pair>
+  <utterance speaker="S1">Hello, how are you?</utterance>
+  <utterance speaker="S2">I'm doing great, thanks.</utterance>
 </transcript>
 
 Instructions:
 1. Only transcribe the new audio provided in this request (ignore context segments).
-2. Wrap each audio/text pair in a <pair> element with a unique index attribute.
+2. Do not wrap individual utterances in additional elements.
 3. Use speaker IDs like S1, S2, etc.
 4. Output only valid XML with no extra text.
 5. Ensure the transcript element includes a 'segment' attribute corresponding to the current segment number.
@@ -227,17 +223,13 @@ async def improve_speaker_identification_segment(
 Format your response as XML with the following structure:
 
 <transcript segment="current">
-  <pair index="1">
-    <utterance speaker="S1">Hello, how are you?</utterance>
-  </pair>
-  <pair index="2">
-    <utterance speaker="S2">I'm doing great, thanks.</utterance>
-  </pair>
+  <utterance speaker="S1">Hello, how are you?</utterance>
+  <utterance speaker="S2">I'm doing great, thanks.</utterance>
 </transcript>
 
 Guidelines:
 1. Use the provided transcription as a base and only output corrected speaker assignments.
-2. Wrap each utterance in a <pair> element with a unique index attribute.
+2. Do not wrap individual utterances in additional elements.
 3. Consider voice characteristics and context; ensure S1 is the interviewer.
 4. Output only valid XML with no extra text.
 """
