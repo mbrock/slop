@@ -105,7 +105,7 @@ def layout(title: str):
                     .htmx-request.htmx-indicator {
                         opacity: 1
                     }
-                     
+
                     button.htmx-request {
                         opacity: 0.5;
                         cursor: wait;
@@ -1081,8 +1081,8 @@ async def update_segment(
 
     # Return the updated segment view
     with tag.div(classes="flex flex-wrap gap-4"):
-        for utterance in segment.utterances:
-            render_utterance(interview_id, segment_index, utterance)
+        for i, utterance in enumerate(segment.utterances):
+            render_utterance(interview_id, segment_index, i, utterance)
 
 
 @app.post("/interview/{interview_id}/rename")
