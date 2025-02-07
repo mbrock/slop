@@ -77,16 +77,18 @@ def layout(title: str):
             with tag.script(src="https://unpkg.com/hyperscript.org@0.9.12"):
                 pass
             live.script_tag()
-            
+
             # Add key tracking script
             with tag.script():
                 text("""
-                    let keyPressed;
+                    window.keyPressed = undefined;
                     document.addEventListener('keydown', (e) => {
-                        keyPressed = e.key;
+                        window.keyPressed = e.key;
+                        console.log(window.keyPressed, "pressed");
                     });
                     document.addEventListener('keyup', () => {
-                        keyPressed = undefined;
+                        window.keyPressed = undefined;
+                        console.log("key released");
                     });
                 """)
 
@@ -644,18 +646,21 @@ async def view_segment(interview_id: str, segment_index: int):
         with tag.div(id=f"segment-content-{segment_index}", classes="w-full"):
             with tag.div(classes="flex flex-wrap gap-4"):
                 for i, utterance in enumerate(segment.utterances):
-                    with tag.span(
-                        **{
-                            "data-speaker": utterance.speaker,
-                            "hx-post": f"/interview/{interview_id}/segment/{segment_index}/update-speaker",
-                            "hx-trigger": "click[keyPressed]",
-                            "hx-vals": f'js:{{"utterance_index": {i}, "key": keyPressed}}',
-                            "hx-swap": "outerHTML",
-                            "_": "on click if keyPressed != undefined then halt",
-                        }
-                    ):
-                        classes(speaker_classes(utterance.speaker))
-                        text(utterance.text)
+                    render_utterance(interview_id, segment_index, i, utterance)
+
+
+def render_utterance(interview_id, segment_index, i, utterance):
+    with tag.span(
+        **{
+            "data-speaker": utterance.speaker,
+            "hx-post": f"/interview/{interview_id}/segment/{segment_index}/update-speaker",
+            "hx-trigger": "click",
+            "hx-vals": f'js:{{"utterance_index": {i}, "key": window.keyPressed}}',
+            "hx-swap": "outerHTML",
+        }
+    ):
+        classes(speaker_classes(utterance.speaker), "hover:underline")
+        text(utterance.text)
 
 
 @app.get("/interview/{interview_id}/segment/{segment_index}/edit")
@@ -1077,9 +1082,7 @@ async def update_segment(
     # Return the updated segment view
     with tag.div(classes="flex flex-wrap gap-4"):
         for utterance in segment.utterances:
-            with tag.span(**{"data-speaker": utterance.speaker}):
-                classes(speaker_classes(utterance.speaker))
-                text(utterance.text)
+            render_utterance(interview_id, segment_index, utterance)
 
 
 @app.post("/interview/{interview_id}/rename")
@@ -1185,9 +1188,7 @@ async def update_speaker(
         INTERVIEWS.put(interview_id, interview)
 
     # Return the updated utterance view
-    with tag.span(**{"data-speaker": utterance.speaker}):
-        classes(speaker_classes(utterance.speaker))
-        text(utterance.text)
+    return render_utterance(interview_id, segment_index, utterance_index, utterance)
 
 
 def main():

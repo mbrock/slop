@@ -7,7 +7,7 @@ def speaker_classes(speaker: str) -> str:
         case "S1":
             return "font-bold"  # Bold for S1
         case "S2":
-            return ""  # Default style for S2
+            return ""
         case "S3":
             return "bg-blue-50"  # Subtle blue background for S3
         case "S4":
