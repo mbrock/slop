@@ -117,9 +117,9 @@ Instructions:
             # Extract the text content
             full_text = response.candidates[0].content.parts[0].text
 
-            # Find the XML
+            # Find the XML with segment attribute
             xml_match = re.search(
-                r"<transcript>(.*?)</transcript>", full_text, re.DOTALL
+                r"<transcript\s+segment=\"[^\"]+\">(.*?)</transcript>", full_text, re.DOTALL
             )
             if not xml_match:
                 raise HTTPException(
@@ -236,8 +236,8 @@ Guidelines:
         # Extract the text content
         full_text = response.candidates[0].content.parts[0].text
 
-        # Find the XML
-        xml_match = re.search(r"<transcript>(.*?)</transcript>", full_text, re.DOTALL)
+        # Find the XML with segment attribute
+        xml_match = re.search(r"<transcript\s+segment=\"[^\"]+\">(.*?)</transcript>", full_text, re.DOTALL)
         if not xml_match:
             raise HTTPException(
                 status_code=500, detail="Failed to find transcription XML"
