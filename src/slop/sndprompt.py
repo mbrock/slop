@@ -109,13 +109,12 @@ async def transcribe_audio_segment(
   <sentence speaker="S2">I'm doing great, thanks.</sentence>
 </transcript>
 
-Instructions:
-1. Only transcribe the new untranscribed audio provided in this request.
-2. Do not wrap individual sentences in additional elements.
-3. Use speaker IDs like S1, S2, etc.
+Guidelines:
+1. Use speaker IDs like S1, S2, etc. Ensure S1 is the interviewer.
+2. Keep natural sentence breaks - a sentence can be a single word or exclamation.
+3. Consider voice characteristics and context from previous segments.
 4. Output only valid XML with no extra text.
-5. Ensure the transcript element includes an 'id' attribute with value "current".
-6. Split long utterances into natural sentences when possible.
+5. Include the transcript element with 'id="current"' attribute.
 """
                     ),
                 ]
@@ -124,7 +123,7 @@ Instructions:
             # Request transcription
             request = GenerateRequest(
                 contents=[Content(role="user", parts=parts)],
-                generationConfig=GenerationConfig(temperature=0.2),
+                generationConfig=GenerationConfig(temperature=0.3),
             )
             response = await client.generate_content_sync(
                 request, model=interview.model_name
@@ -251,11 +250,11 @@ Format your response as XML with the following structure:
 </transcript>
 
 Guidelines:
-1. Use the provided transcription as a base and only output corrected speaker assignments.
-2. Do not wrap individual sentences in additional elements.
-3. Consider voice characteristics and context; ensure S1 is the interviewer.
+1. Use speaker IDs like S1, S2, etc. Ensure S1 is the interviewer.
+2. Keep natural sentence breaks - a sentence can be a single word or exclamation.
+3. Consider voice characteristics and context from previous segments.
 4. Output only valid XML with no extra text.
-5. Keep natural sentence breaks as they are.
+5. Include the transcript element with 'id="current"' attribute.
 """
                 ),
             ]
