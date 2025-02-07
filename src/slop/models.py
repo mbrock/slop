@@ -51,6 +51,10 @@ class Interview(BaseModel):
         default=1,
         description="Number of previous segments to include as context for transcription",
     )
+    model_name: str = Field(
+        default="gemini-2.0-flash-exp",
+        description="The Gemini model to use for transcription",
+    )
     segments: list[Segment] = []
 
 

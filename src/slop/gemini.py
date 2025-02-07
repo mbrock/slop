@@ -270,6 +270,30 @@ class FileList(BaseModel):
     nextPageToken: Optional[str] = None
 
 
+class GeminiError(Exception):
+    """Base class for Gemini API errors."""
+
+    def __init__(self, message: str, error_data: dict | None = None):
+        self.message = message
+        self.error_data = error_data
+        super().__init__(message)
+
+
+class ModelOverloadedError(GeminiError):
+    """Raised when the model is overloaded and we could try an alternative."""
+
+    def __init__(self, current_model: str):
+        self.current_model = current_model
+        self.alternative_model = (
+            "gemini-2.0-flash-exp"
+            if "pro" in current_model
+            else "gemini-2.0-pro-exp-02-05"
+        )
+        super().__init__(
+            f"Model {current_model} is overloaded. Consider trying {self.alternative_model}"
+        )
+
+
 class GeminiClient:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
@@ -462,24 +486,53 @@ class GeminiClient:
     async def generate_content_sync(
         self,
         request: GenerateRequest,
-        #    model: str = "gemini-2.0-flash-exp",
         model: str = "gemini-2.0-pro-exp-02-05",
     ) -> GenerateContentResponse:
         """Non-streaming version of generate_content"""
         url = f"{self.base_url}/v1beta/models/{model}:generateContent"
         async with httpx.AsyncClient() as client:
             rich.print(request.model_dump(exclude_none=True))
-            response = await client.post(
-                url,
-                params={"key": self.api_key},
-                json=request.model_dump(exclude_none=True),
-                headers={"Content-Type": "application/json"},
-                timeout=60 * 5,
-            )
-            if response.is_error:
-                rich.print(response.json())
-            response.raise_for_status()
-            return GenerateContentResponse.model_validate(response.json())
+            try:
+                response = await client.post(
+                    url,
+                    params={"key": self.api_key},
+                    json=request.model_dump(exclude_none=True),
+                    headers={"Content-Type": "application/json"},
+                    timeout=60 * 5,
+                )
+                if response.is_error:
+                    error_data = response.json()
+                    rich.print(error_data)
+
+                    error_status = error_data.get("error", {}).get("status")
+                    error_message = error_data.get("error", {}).get(
+                        "message", "Unknown error occurred"
+                    )
+
+                    if error_status == "UNAVAILABLE":
+                        raise ModelOverloadedError(model)
+                    elif error_status == "INTERNAL":
+                        raise GeminiError(
+                            "Internal server error occurred. Please try again.",
+                            error_data,
+                        )
+                    elif error_status == "INVALID_ARGUMENT":
+                        raise GeminiError(
+                            f"Invalid request: {error_message}", error_data
+                        )
+                    else:
+                        raise GeminiError(f"API error: {error_message}", error_data)
+
+                response.raise_for_status()
+                return GenerateContentResponse.model_validate(response.json())
+            except httpx.TimeoutError:
+                raise GeminiError("Request timed out. Please try again.")
+            except httpx.HTTPError as e:
+                rich.print(f"HTTP error occurred: {e}")
+                raise GeminiError(f"HTTP error: {str(e)}")
+            except Exception as e:
+                rich.print(f"Unexpected error: {e}")
+                raise GeminiError(f"Unexpected error: {str(e)}")
 
 
 # Example usage:

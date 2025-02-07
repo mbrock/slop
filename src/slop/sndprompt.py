@@ -27,7 +27,7 @@ async def transcribe_audio_segment(
     start_time: str,
     end_time: str,
     context_segments: list[Segment] | None = None,
-) -> list[Utterance]:
+) -> tuple[list[Utterance], str]:
     """
     Transcribe an audio segment using Gemini.
     Returns the transcribed utterances.
@@ -36,7 +36,7 @@ async def transcribe_audio_segment(
         interview_id: The ID of the interview
         start_time: Start time in HH:MM:SS format
         end_time: End time in HH:MM:SS format
-        context_segments: List of previous segments to use as context, ordered from oldest to newest
+        context_segments: List of previous segments for context, ordered from oldest to newest
     """
     if not (interview := INTERVIEWS.get(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -88,7 +88,7 @@ async def transcribe_audio_segment(
                         context_xml = (
                             f'<transcript id="{i}">'
                             + "".join(
-                                f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
+                                f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
                                 for u in prev_segment.utterances
                             )
                             + "</transcript>"
@@ -105,16 +105,17 @@ async def transcribe_audio_segment(
                         text="""Format your response as XML with the following structure:
 
 <transcript id="current">
-  <utterance speaker="S1">Hello, how are you?</utterance>
-  <utterance speaker="S2">I'm doing great, thanks.</utterance>
+  <sentence speaker="S1">Hello, how are you?</sentence>
+  <sentence speaker="S2">I'm doing great, thanks.</sentence>
 </transcript>
 
 Instructions:
 1. Only transcribe the new untranscribed audio provided in this request.
-2. Do not wrap individual utterances in additional elements.
+2. Do not wrap individual sentences in additional elements.
 3. Use speaker IDs like S1, S2, etc.
 4. Output only valid XML with no extra text.
 5. Ensure the transcript element includes an 'id' attribute with value "current".
+6. Split long utterances into natural sentences when possible.
 """
                     ),
                 ]
@@ -125,7 +126,10 @@ Instructions:
                 contents=[Content(role="user", parts=parts)],
                 generationConfig=GenerationConfig(temperature=0.2),
             )
-            response = await client.generate_content_sync(request)
+            response = await client.generate_content_sync(
+                request, model=interview.model_name
+            )
+
             if not response.candidates:
                 raise HTTPException(
                     status_code=500, detail="Failed to transcribe segment"
@@ -163,6 +167,7 @@ async def improve_speaker_identification_segment(
     current_utterances: list[Utterance],
     context_segments: list[Segment] | None = None,
     hint: str | None = None,
+    model_name: str = "gemini-2.0-flash-exp",
 ) -> list[Utterance]:
     """
     Use Gemini to improve speaker identification for an audio segment.
@@ -172,6 +177,7 @@ async def improve_speaker_identification_segment(
         current_utterances: Current utterances with speaker assignments
         context_segments: Optional list of previous segments for context
         hint: Optional user hint about the speakers
+        model_name: The name of the model to use for improved speaker identification
 
     Returns:
         List of utterances with improved speaker assignments
@@ -209,7 +215,7 @@ async def improve_speaker_identification_segment(
                     parts.append(
                         Part(
                             text="".join(
-                                f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
+                                f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
                                 for u in prev_segment.utterances
                             )
                         )
@@ -228,7 +234,7 @@ async def improve_speaker_identification_segment(
                 Part(
                     text='<transcript id="current">\n'
                     + "".join(
-                        f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
+                        f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
                         for u in current_utterances
                     )
                     + "\n</transcript>"
@@ -240,15 +246,16 @@ async def improve_speaker_identification_segment(
 Format your response as XML with the following structure:
 
 <transcript id="current">
-  <utterance speaker="S1">Hello, how are you?</utterance>
-  <utterance speaker="S2">I'm doing great, thanks.</utterance>
+  <sentence speaker="S1">Hello, how are you?</sentence>
+  <sentence speaker="S2">I'm doing great, thanks.</sentence>
 </transcript>
 
 Guidelines:
 1. Use the provided transcription as a base and only output corrected speaker assignments.
-2. Do not wrap individual utterances in additional elements.
+2. Do not wrap individual sentences in additional elements.
 3. Consider voice characteristics and context; ensure S1 is the interviewer.
 4. Output only valid XML with no extra text.
+5. Keep natural sentence breaks as they are.
 """
                 ),
             ]
@@ -259,7 +266,7 @@ Guidelines:
             contents=[Content(role="user", parts=parts)],
             generationConfig=GenerationConfig(temperature=0.4),
         )
-        response = await client.generate_content_sync(request)
+        response = await client.generate_content_sync(request, model=model_name)
         if not response.candidates:
             raise HTTPException(
                 status_code=500, detail="Failed to improve speaker identification"
@@ -295,7 +302,7 @@ def parse_transcription_xml(xml_text: str) -> list[Utterance]:
     Parse transcription XML into a list of Utterances.
     Expected format:
         <transcript id="current">
-            <utterance speaker="S1">Hello</utterance>
+            <sentence speaker="S1">Hello</sentence>
             ...
         </transcript>
     """
@@ -303,11 +310,11 @@ def parse_transcription_xml(xml_text: str) -> list[Utterance]:
         tree = ET.parse(StringIO(xml_text))
         root = tree.getroot()
         utterances = []
-        for utt in root.findall("utterance"):
+        for sent in root.findall("sentence"):
             utterances.append(
                 Utterance(
-                    speaker=utt.get("speaker"),
-                    text=utt.text.strip() if utt.text else "",
+                    speaker=sent.get("speaker"),
+                    text=sent.text.strip() if sent.text else "",
                 )
             )
         return utterances

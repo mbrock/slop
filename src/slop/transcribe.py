@@ -19,6 +19,10 @@ from tagflow import (
     text,
 )
 
+from slop.gemini import (
+    ModelOverloadedError,
+    GeminiError,
+)
 from slop.models import (
     BLOBS,
     INTERVIEWS,
@@ -530,6 +534,37 @@ def interview_header(title: str, interview_id: str):
                     ):
                         pass
 
+                # Model selector
+                with tag.form(
+                    action=f"/interview/{interview_id}/model",
+                    method="post",
+                    classes="flex items-center gap-2",
+                ):
+                    with tag.label(classes="text-sm text-gray-600"):
+                        text("Model:")
+                    with tag.div(classes="flex gap-2"):
+                        for model in [
+                            "gemini-2.0-flash-exp",
+                            "gemini-2.0-pro-exp-02-05",
+                        ]:
+                            with tag.label(classes="flex items-center gap-1"):
+                                with tag.input(
+                                    type="radio",
+                                    name="model_name",
+                                    value=model,
+                                    checked=INTERVIEWS.get(interview_id).model_name
+                                    == model,
+                                    classes="text-blue-600",
+                                    **{
+                                        "hx-post": f"/interview/{interview_id}/model",
+                                        "hx-trigger": "change",
+                                        "hx-swap": "none",
+                                    },
+                                ):
+                                    pass
+                                with tag.span(classes="text-sm text-gray-600"):
+                                    text("Flash" if "flash" in model.lower() else "Pro")
+
                 with tag.form(
                     action=f"/interview/{interview_id}/rename",
                     method="post",
@@ -625,7 +660,7 @@ async def edit_segment_dialog(interview_id: str, segment_index: int):
         with tag.div(classes="flex gap-2"):
             with tag.textarea(
                 name="content",
-                classes="flex-1 h-32 font-mono p-2 border rounded text-sm",
+                classes="flex-1 h-[60vh] font-mono p-2 border rounded text-sm",
                 placeholder="Format: 'S1: Hello\n\nS2: Hi there'",
             ):
                 text(text_content)
@@ -791,31 +826,78 @@ async def transcribe_next_segment(interview_id: str):
     start_time = interview.current_position
     end_time = increment_time(start_time, seconds=60 * 2)
 
-    # Transcribe the segment
-    utterances, segment_hash = await transcribe_audio_segment(
-        interview_id,
-        start_time,
-        end_time,
-        context_segments,
-    )
+    try:
+        # Transcribe the segment
+        utterances, segment_hash = await transcribe_audio_segment(
+            interview_id,
+            start_time,
+            end_time,
+            context_segments,
+        )
 
-    # Create and save the new segment
-    segment = Segment(
-        start_time=start_time,
-        end_time=end_time,
-        audio_hash=segment_hash,
-        utterances=utterances,
-    )
+        # Create and save the new segment
+        segment = Segment(
+            start_time=start_time,
+            end_time=end_time,
+            audio_hash=segment_hash,
+            utterances=utterances,
+        )
 
-    # Advance current position by two minutes - 1 second
-    interview.current_position = increment_time(start_time, seconds=60 * 2 - 1)
+        # Advance current position by two minutes - 1 second
+        interview.current_position = increment_time(start_time, seconds=60 * 2 - 1)
 
-    # Append segment to interview and save
-    interview.segments.append(segment)
-    INTERVIEWS.put(interview_id, interview)
+        # Append segment to interview and save
+        interview.segments.append(segment)
+        INTERVIEWS.put(interview_id, interview)
 
-    # Return the new segment as a partial view
-    return await view_segment(interview_id, len(interview.segments) - 1)
+        # Return the new segment as a partial view
+        return await view_segment(interview_id, len(interview.segments) - 1)
+
+    except ModelOverloadedError as e:
+        # Return a modal dialog offering to switch models
+        with tag.div(
+            classes="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center",
+            id="model-overload-dialog",
+        ):
+            with tag.div(classes="bg-white p-4 rounded-lg shadow-lg max-w-md"):
+                with tag.p(classes="mb-4"):
+                    text(
+                        f"The model {e.current_model} is overloaded. Would you like to try using {e.alternative_model}?"
+                    )
+                with tag.div(classes="flex justify-end gap-2"):
+                    with tag.button(
+                        classes="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700",
+                        **{
+                            "hx-post": f"/interview/{interview_id}/switch-model/{e.alternative_model}",
+                            "hx-target": "#model-overload-dialog",
+                            "hx-swap": "outerHTML",
+                        },
+                    ):
+                        text("Yes, try alternative model")
+                    with tag.button(
+                        classes="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50",
+                        **{
+                            "hx-post": f"/interview/{interview_id}/retry-transcription",
+                            "hx-target": "#model-overload-dialog",
+                            "hx-swap": "outerHTML",
+                        },
+                    ):
+                        text("No, retry current model")
+
+    except GeminiError as e:
+        # Show error toast notification
+        with tag.div(
+            classes="fixed bottom-4 right-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded shadow-lg",
+            role="alert",
+            **{
+                "hx-swap-oob": "true",
+                "_": "on load wait 5s then remove me",
+            },
+        ):
+            with tag.p(classes="font-bold"):
+                text("Error")
+            with tag.p():
+                text(e.message)
 
 
 @app.post("/interview/{interview_id}/segment/{segment_index}/retranscribe")
@@ -883,6 +965,7 @@ async def improve_speaker_identification(
         segment.utterances,
         context_segments,
         hint,
+        model_name=interview.model_name,
     )
 
     # Update the segment
@@ -1012,8 +1095,9 @@ async def export_interview(interview_id: str):
         for utterance in segment.utterances:
             p = doc.add_paragraph()
             speaker_run = p.add_run(f"{utterance.speaker}: ")
-            speaker_run.bold = True
-            p.add_run(utterance.text)
+            speaker_run.bold = True if utterance.speaker == "S1" else False
+            text_run = p.add_run(utterance.text)
+            text_run.bold = True if utterance.speaker == "S1" else False
 
     # Save to BytesIO
     docx_bytes = BytesIO()
@@ -1038,6 +1122,18 @@ async def update_context_segments(interview_id: str, context_segments: int = For
     interview.context_segments = max(
         0, min(5, context_segments)
     )  # Clamp between 0 and 5
+    INTERVIEWS.put(interview_id, interview)
+
+    return Response(status_code=204)  # No content response
+
+
+@app.post("/interview/{interview_id}/model")
+async def update_model(interview_id: str, model_name: str = Form(...)):
+    """Updates the model to use for transcription."""
+    if not (interview := INTERVIEWS.get(interview_id)):
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    interview.model_name = model_name
     INTERVIEWS.put(interview_id, interview)
 
     return Response(status_code=204)  # No content response
