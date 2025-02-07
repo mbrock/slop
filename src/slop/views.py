@@ -1,4 +1,4 @@
-from tagflow import tag, text, classes
+from tagflow import tag, text
 
 
 def speaker_classes(speaker: str) -> str:

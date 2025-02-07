@@ -1,192 +1,41 @@
-import hashlib
 import logging
-import os
-import re
-import sqlite3
 import tempfile
 from contextlib import asynccontextmanager, contextmanager
-from pathlib import Path
 from io import BytesIO
+from pathlib import Path
 
-import rich
 import trio
-from fastapi import FastAPI, UploadFile, HTTPException, Request, Response, Form
+from docx import Document
+from docx.shared import Pt
+from fastapi import FastAPI, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
-from pydantic import BaseModel, Field
-
-from slop.gemini import (
-    Content,
-    FileData,
-    GenerateRequest,
-    GeminiClient,
-    Part,
-)
-from slop.views import upload_area, speaker_classes
 from tagflow import (
     DocumentMiddleware,
     Live,
     TagResponse,
+    attr,
     classes,
     tag,
     text,
-    attr,
 )
-from docx import Document
-from docx.shared import Pt
+
+from slop.models import (
+    BLOBS,
+    INTERVIEWS,
+    Interview,
+    Segment,
+    Utterance,
+)
+from slop.sndprompt import (
+    improve_speaker_identification_segment,
+    transcribe_audio_segment,
+)
+from slop.views import speaker_classes, upload_area
 
 logger = logging.getLogger("slop.transcribe")
 
 # Initialize Live instance for WebSocket support
 live = Live()
-
-
-class PartitionSegment(BaseModel):
-    """A segment of the interview with start and end times."""
-
-    start_time: str = Field(description="Start time of the segment (HH:MM:SS)")
-    end_time: str = Field(description="End time of the segment (HH:MM:SS)")
-    phrases: list[str] = Field(
-        description="Some example short phrases from this segment to help orient the user"
-    )
-    audio_hash: str | None = None  # Hash of the segment's audio
-
-
-class Utterance(BaseModel):
-    """A single utterance in the interview."""
-
-    speaker: str = Field(description="Speaker identifier (e.g. 'S1', 'S2')")
-    text: str = Field(description="The transcribed text")
-    audio_hash: str | None = None  # Hash of the utterance's audio segment
-
-
-class Segment(BaseModel):
-    """A segment of the interview containing utterances."""
-
-    start_time: str = Field(description="Start time of the segment (HH:MM:SS)")
-    end_time: str = Field(description="End time of the segment (HH:MM:SS)")
-    audio_hash: str | None = None  # Hash of the segment's audio
-    utterances: list[Utterance] = []
-
-
-class Interview(BaseModel):
-    """An interview with its metadata and transcribed segments."""
-
-    id: str
-    filename: str
-    audio_hash: str | None = None  # Hash of the processed audio file
-    duration: str = Field(
-        default="00:00:00",
-        description="Total duration of the interview (HH:MM:SS)",
-    )
-    current_position: str = Field(
-        default="00:00:00",
-        description="Current position in the interview (HH:MM:SS)",
-    )
-    context_segments: int = Field(
-        default=1,
-        description="Number of previous segments to include as context for transcription",
-    )
-    segments: list[Segment] = []
-
-
-class Store:
-    """
-    A simple key-value store using SQLite and a Pydantic model.
-    """
-
-    def __init__(self, db_path: str | Path, model_class: type[BaseModel]):
-        self.db_path = Path(db_path)
-        self.model_class = model_class
-        self._init_db()
-
-    def _init_db(self):
-        """Initialize the database with a key-value table."""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS store (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                )
-                """
-            )
-
-    def get(self, key: str) -> BaseModel | None:
-        """Get a value by key."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT value FROM store WHERE key = ?", (key,))
-            if row := cursor.fetchone():
-                return self.model_class.model_validate_json(row[0])
-            return None
-
-    def put(self, key: str, value: BaseModel):
-        """Store a value by key."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
-                (key, value.model_dump_json()),
-            )
-
-    def values(self) -> list[BaseModel]:
-        """Get all values."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT value FROM store")
-            return [
-                self.model_class.model_validate_json(row[0])
-                for row in cursor.fetchall()
-            ]
-
-
-class BlobStore:
-    """
-    Content-addressed store for binary data.
-    """
-
-    def __init__(self, db_path: str | Path):
-        self.db_path = Path(db_path)
-        self._init_db()
-
-    def _init_db(self):
-        """Initialize the database with a blobs table."""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS blobs (
-                    hash TEXT PRIMARY KEY,
-                    data BLOB NOT NULL,
-                    mime_type TEXT NOT NULL
-                )
-                """
-            )
-
-    def put(self, data: bytes, mime_type: str) -> str:
-        """Store binary data and return its hash."""
-        hash_ = hashlib.sha256(data).hexdigest()
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO blobs (hash, data, mime_type) VALUES (?, ?, ?)",
-                (hash_, data, mime_type),
-            )
-        return hash_
-
-    def get(self, hash_: str) -> tuple[bytes, str] | None:
-        """Get binary data and mime type by hash."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT data, mime_type FROM blobs WHERE hash = ?", (hash_,)
-            )
-            if row := cursor.fetchone():
-                return row[0], row[1]
-            return None
-
-
-# Initialize the stores
-data_dir = os.getenv("IEVA_DATA", "/data")
-
-INTERVIEWS = Store(Path(data_dir, "interviews.db"), Interview)
-BLOBS = BlobStore(Path(data_dir, "blobs.db"))
 
 
 @asynccontextmanager
@@ -873,42 +722,6 @@ async def view_interview(interview_id: str):
                     )
 
 
-async def extract_segment(input_path: Path, start_time: str, end_time: str) -> bytes:
-    """
-    Extract a segment from an audio file using ffmpeg.
-    Returns the extracted segment as bytes.
-    """
-    rich.print(
-        {"input_path": str(input_path), "start_time": start_time, "end_time": end_time}
-    )
-    process = await trio.run_process(
-        [
-            "ffmpeg",
-            "-i",
-            str(input_path),
-            "-ss",
-            start_time,  # Start time
-            "-to",
-            end_time,  # End time
-            "-c:a",
-            "libvorbis",  # Vorbis codec
-            "-q:a",
-            "8",  # Quality level
-            "-f",
-            "ogg",  # Output format
-            "pipe:1",  # Output to stdout
-        ],
-        capture_stdout=True,
-        capture_stderr=True,
-    )
-
-    if process.returncode != 0:
-        stderr = process.stderr.decode("utf-8", errors="replace")
-        raise RuntimeError(f"FFmpeg failed: {stderr}")
-
-    return process.stdout
-
-
 @app.get("/audio/{hash_}")
 async def get_audio(hash_: str, request: Request):
     """
@@ -957,164 +770,6 @@ async def get_audio(hash_: str, request: Request):
             "content-length": str(content_length),
         },
     )
-
-
-def parse_transcription_xml(xml_text: str) -> list[Utterance]:
-    """
-    Parse transcription XML into a list of Utterances.
-    Expected format:
-        <transcript>
-            <utterance speaker="S1">Hello</utterance>
-            ...
-        </transcript>
-    """
-    import xml.etree.ElementTree as ET
-    from io import StringIO
-
-    try:
-        tree = ET.parse(StringIO(xml_text))
-        root = tree.getroot()
-        utterances = []
-        for utt in root.findall("utterance"):
-            utterances.append(
-                Utterance(
-                    speaker=utt.get("speaker"),
-                    text=utt.text.strip() if utt.text else "",
-                )
-            )
-        return utterances
-    except ET.ParseError as e:
-        logger.error(f"Failed to parse XML: {e}")
-        logger.error(f"XML content was: {xml_text}")
-        return []
-
-
-async def transcribe_audio_segment(
-    interview_id: str,
-    start_time: str,
-    end_time: str,
-    context_segments: list[Segment] | None = None,
-) -> list[Utterance]:
-    """
-    Transcribe an audio segment using Gemini.
-    Returns the transcribed utterances.
-
-    Args:
-        interview_id: The ID of the interview
-        start_time: Start time in HH:MM:SS format
-        end_time: End time in HH:MM:SS format
-        context_segments: List of previous segments to use as context, ordered from oldest to newest
-    """
-    if not (interview := INTERVIEWS.get(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
-
-    if not interview.audio_hash:
-        raise HTTPException(status_code=400, detail="Interview has no audio")
-
-    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
-        # Get the full interview audio
-        audio_data, _ = BLOBS.get(interview.audio_hash)
-        tmp.write(audio_data)
-        tmp.flush()
-        tmp_path = Path(tmp.name)
-
-        try:
-            # Extract the segment audio
-            segment_audio = await extract_segment(tmp_path, start_time, end_time)
-            segment_hash = BLOBS.put(segment_audio, "audio/ogg")
-
-            # Upload segment to Gemini
-            client = GeminiClient()
-            file = await client.upload_bytes(
-                segment_audio,
-                mime_type="audio/ogg",
-                display_name=f"segment_{start_time}",
-            )
-
-            parts = []
-
-            # Include previous segments as context if available
-            if context_segments:
-                for i, prev_segment in enumerate(context_segments):
-                    if prev_segment.audio_hash:
-                        prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
-                        prev_file = await client.upload_bytes(
-                            prev_audio_data,
-                            mime_type="audio/ogg",
-                            display_name=f"context_segment_{i}_{prev_segment.start_time}",
-                        )
-                        parts.extend(
-                            [
-                                Part(
-                                    text=f"Context segment {i + 1} ({prev_segment.start_time} - {prev_segment.end_time}):"
-                                ),
-                                Part(
-                                    fileData=FileData(
-                                        fileUri=prev_file.uri, mimeType="audio/ogg"
-                                    )
-                                ),
-                                Part(
-                                    text="".join(
-                                        f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
-                                        for u in prev_segment.utterances
-                                    )
-                                ),
-                            ]
-                        )
-
-            # Add current segment's audio and instructions
-            parts.extend(
-                [
-                    Part(text="New audio segment:"),
-                    Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
-                    Part(
-                        text="""Format your response as XML in the following format:
-
-<transcript>
-  <utterance speaker="S1">Hello, how are you?</utterance>
-  <utterance speaker="S2">I'm doing— I'm— yeah, I'm great.</utterance>
-</transcript>
-
-1. Use speaker IDs like S1, S2, etc.
-2. Output only valid XML, no extra text.
-3. Maintain consistent speaker identities with the previous segments' context.
-4. Pay attention to the voice and context to get the diarization correct.
-"""
-                    ),
-                ]
-            )
-
-            # Request transcription
-            request = GenerateRequest(contents=[Content(role="user", parts=parts)])
-            response = await client.generate_content_sync(request)
-            if not response.candidates:
-                raise HTTPException(
-                    status_code=500, detail="Failed to transcribe segment"
-                )
-
-            # Extract the text content
-            full_text = response.candidates[0].content.parts[0].text
-
-            # Find the XML
-            xml_match = re.search(
-                r"<transcript>(.*?)</transcript>", full_text, re.DOTALL
-            )
-            if not xml_match:
-                raise HTTPException(
-                    status_code=500, detail="Failed to find transcription XML"
-                )
-
-            xml_text = xml_match.group(0)
-            utterances = parse_transcription_xml(xml_text)
-            if not utterances:
-                raise HTTPException(
-                    status_code=500, detail="Failed to parse transcription XML"
-                )
-
-            return utterances, segment_hash
-        finally:
-            tmp_path.unlink()
-            await client.delete_file(file.name)
 
 
 @app.post("/interview/{interview_id}/transcribe-next")
@@ -1222,116 +877,20 @@ async def improve_speaker_identification(
 
     audio_data, _ = BLOBS.get(segment.audio_hash)
 
-    # Upload to Gemini
-    client = GeminiClient()
-    file = await client.upload_bytes(
+    # Improve speaker identification
+    utterances = await improve_speaker_identification_segment(
         audio_data,
-        mime_type="audio/ogg",
-        display_name=f"segment_{segment.start_time}",
+        segment.utterances,
+        context_segments,
+        hint,
     )
 
-    try:
-        parts = []
+    # Update the segment
+    segment.utterances = utterances
+    INTERVIEWS.put(interview_id, interview)
 
-        # Include previous segments as context
-        if context_segments:
-            for i, prev_segment in enumerate(context_segments):
-                if prev_segment.audio_hash:
-                    prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
-                    prev_file = await client.upload_bytes(
-                        prev_audio_data,
-                        mime_type="audio/ogg",
-                        display_name=f"context_segment_{i}_{prev_segment.start_time}",
-                    )
-                    parts.extend(
-                        [
-                            Part(
-                                text=f"Context segment {i + 1} ({prev_segment.start_time} - {prev_segment.end_time}):"
-                            ),
-                            Part(
-                                fileData=FileData(
-                                    fileUri=prev_file.uri, mimeType="audio/ogg"
-                                )
-                            ),
-                            Part(
-                                text="".join(
-                                    f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
-                                    for u in prev_segment.utterances
-                                )
-                            ),
-                        ]
-                    )
-
-        # Add current segment with its current transcription
-        parts.extend(
-            [
-                Part(
-                    text="Current segment that needs speaker identification improvement:"
-                ),
-                Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
-                Part(
-                    text="Current transcription:\n"
-                    + "".join(
-                        f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
-                        for u in segment.utterances
-                    )
-                ),
-                Part(
-                    text=f"""Please improve the speaker identification in this segment.
-{f"User hint about the speakers: {hint}" if hint else ""}
-
-Format your response as XML with the same utterances but with corrected speaker IDs:
-
-<transcript>
-  <utterance speaker="S1">Hello, how are you?</utterance>
-  <utterance speaker="S2">I'm doing great, thanks.</utterance>
-</transcript>
-
-Guidelines:
-1. Keep the same text content but fix speaker assignments
-2. Use consistent speaker IDs (S1, S2, etc.)
-3. Consider voice characteristics and context
-4. S1 should be the interviewer
-5. Output only valid XML, no extra text
-"""
-                ),
-            ]
-        )
-
-        # Request improved speaker identification
-        request = GenerateRequest(contents=[Content(role="user", parts=parts)])
-        response = await client.generate_content_sync(request)
-        if not response.candidates:
-            raise HTTPException(
-                status_code=500, detail="Failed to improve speaker identification"
-            )
-
-        # Extract the text content
-        full_text = response.candidates[0].content.parts[0].text
-
-        # Find the XML
-        xml_match = re.search(r"<transcript>(.*?)</transcript>", full_text, re.DOTALL)
-        if not xml_match:
-            raise HTTPException(
-                status_code=500, detail="Failed to find transcription XML"
-            )
-
-        xml_text = xml_match.group(0)
-        utterances = parse_transcription_xml(xml_text)
-        if not utterances:
-            raise HTTPException(
-                status_code=500, detail="Failed to parse transcription XML"
-            )
-
-        # Update the segment
-        segment.utterances = utterances
-        INTERVIEWS.put(interview_id, interview)
-
-        # Return the updated segment view
-        return await view_segment(interview_id, segment_index)
-
-    finally:
-        await client.delete_file(file.name)
+    # Return the updated segment view
+    return await view_segment(interview_id, segment_index)
 
 
 def increment_time(time_str: str, seconds: int) -> str:
