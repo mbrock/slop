@@ -94,17 +94,23 @@ async def transcribe_audio_segment(
                     Part(text="New audio segment:"),
                     Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
                     Part(
-                        text="""Format your response as XML in the following format:
+                        text="""Format your response as XML with the following structure:
 
-<transcript>
-  <utterance speaker="S1">Hello, how are you?</utterance>
-  <utterance speaker="S2">I'm doing— I'm— yeah, I'm great.</utterance>
+<transcript segment="{SEGMENT_NUMBER}">
+  <pair index="1">
+    <utterance speaker="S1">Hello, how are you?</utterance>
+  </pair>
+  <pair index="2">
+    <utterance speaker="S2">I'm doing great, thanks.</utterance>
+  </pair>
 </transcript>
 
-1. Use speaker IDs like S1, S2, etc.
-2. Output only valid XML, no extra text.
-3. Maintain consistent speaker identities with the previous segments' context.
-4. Pay attention to the voice and context to get the diarization correct.
+Instructions:
+1. Only transcribe the new audio provided in this request (ignore context segments).
+2. Wrap each audio/text pair in a <pair> element with a unique index attribute.
+3. Use speaker IDs like S1, S2, etc.
+4. Output only valid XML with no extra text.
+5. Ensure the transcript element includes a 'segment' attribute corresponding to the current segment number.
 """
                     ),
                 ]
@@ -218,19 +224,22 @@ async def improve_speaker_identification_segment(
                     text=f"""Please improve the speaker identification in this segment.
 {f"User hint about the speakers: {hint}" if hint else ""}
 
-Format your response as XML with the same utterances but with corrected speaker IDs:
+Format your response as XML with the following structure:
 
-<transcript>
-  <utterance speaker="S1">Hello, how are you?</utterance>
-  <utterance speaker="S2">I'm doing great, thanks.</utterance>
+<transcript segment="current">
+  <pair index="1">
+    <utterance speaker="S1">Hello, how are you?</utterance>
+  </pair>
+  <pair index="2">
+    <utterance speaker="S2">I'm doing great, thanks.</utterance>
+  </pair>
 </transcript>
 
 Guidelines:
-1. Keep the same text content but fix speaker assignments
-2. Use consistent speaker IDs (S1, S2, etc.)
-3. Consider voice characteristics and context
-4. S1 should be the interviewer
-5. Output only valid XML, no extra text
+1. Use the provided transcription as a base and only output corrected speaker assignments.
+2. Wrap each utterance in a <pair> element with a unique index attribute.
+3. Consider voice characteristics and context; ensure S1 is the interviewer.
+4. Output only valid XML with no extra text.
 """
                 ),
             ]
