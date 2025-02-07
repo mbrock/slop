@@ -69,24 +69,18 @@ async def transcribe_audio_segment(
                             mime_type="audio/ogg",
                             display_name=f"context_segment_{i}_{prev_segment.start_time}",
                         )
-                        parts.extend(
-                            [
-                                Part(
-                                    text=f"Context segment {i + 1} ({prev_segment.start_time} - {prev_segment.end_time}):"
-                                ),
-                                Part(
-                                    fileData=FileData(
-                                        fileUri=prev_file.uri, mimeType="audio/ogg"
-                                    )
-                                ),
-                                Part(
-                                    text="".join(
-                                        f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
-                                        for u in prev_segment.utterances
-                                    )
-                                ),
-                            ]
+                        context_xml = (
+                            f'<contextSegment index="{i+1}" start="{prev_segment.start_time}" end="{prev_segment.end_time}">'
+                            f'<audio fileUri="{prev_file.uri}" mimeType="audio/ogg"/>'
+                            '<utterances>'
+                            + "".join(
+                                f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
+                                for u in prev_segment.utterances
+                            )
+                            + '</utterances>'
+                            '</contextSegment>'
                         )
+                        parts.append(Part(text=context_xml))
 
             # Add current segment's audio and instructions
             parts.extend(
@@ -183,24 +177,18 @@ async def improve_speaker_identification_segment(
                         mime_type="audio/ogg",
                         display_name=f"context_segment_{i}_{prev_segment.start_time}",
                     )
-                    parts.extend(
-                        [
-                            Part(
-                                text=f"Context segment {i + 1} ({prev_segment.start_time} - {prev_segment.end_time}):"
-                            ),
-                            Part(
-                                fileData=FileData(
-                                    fileUri=prev_file.uri, mimeType="audio/ogg"
-                                )
-                            ),
-                            Part(
-                                text="".join(
-                                    f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
-                                    for u in prev_segment.utterances
-                                )
-                            ),
-                        ]
+                    context_xml = (
+                        f'<contextSegment index="{i+1}" start="{prev_segment.start_time}" end="{prev_segment.end_time}">'
+                        f'<audio fileUri="{prev_file.uri}" mimeType="audio/ogg"/>'
+                        '<utterances>'
+                        + "".join(
+                            f'<utterance speaker="{u.speaker}">{u.text}</utterance>'
+                            for u in prev_segment.utterances
+                        )
+                        + '</utterances>'
+                        '</contextSegment>'
                     )
+                    parts.append(Part(text=context_xml))
 
         # Add current segment with its current transcription
         parts.extend(
