@@ -74,7 +74,21 @@ def layout(title: str):
                 pass
             with tag.script(src="https://unpkg.com/htmx.org@2.0.4"):
                 pass
+            with tag.script(src="https://unpkg.com/hyperscript.org@0.9.12"):
+                pass
             live.script_tag()
+            
+            # Add key tracking script
+            with tag.script():
+                text("""
+                    let keyPressed;
+                    document.addEventListener('keydown', (e) => {
+                        keyPressed = e.key;
+                    });
+                    document.addEventListener('keyup', () => {
+                        keyPressed = undefined;
+                    });
+                """)
 
             # Add CSS for loading indicator
             with tag.style():
@@ -629,8 +643,17 @@ async def view_segment(interview_id: str, segment_index: int):
         # Display each utterance
         with tag.div(id=f"segment-content-{segment_index}", classes="w-full"):
             with tag.div(classes="flex flex-wrap gap-4"):
-                for utterance in segment.utterances:
-                    with tag.span(**{"data-speaker": utterance.speaker}):
+                for i, utterance in enumerate(segment.utterances):
+                    with tag.span(
+                        **{
+                            "data-speaker": utterance.speaker,
+                            "hx-post": f"/interview/{interview_id}/segment/{segment_index}/update-speaker",
+                            "hx-trigger": "click[keyPressed]",
+                            "hx-vals": f'js:{{"utterance_index": {i}, "key": keyPressed}}',
+                            "hx-swap": "outerHTML",
+                            "_": "on click if keyPressed != undefined then halt",
+                        }
+                    ):
                         classes(speaker_classes(utterance.speaker))
                         text(utterance.text)
 
@@ -1137,6 +1160,34 @@ async def update_model(interview_id: str, model_name: str = Form(...)):
     INTERVIEWS.put(interview_id, interview)
 
     return Response(status_code=204)  # No content response
+
+
+@app.post("/interview/{interview_id}/segment/{segment_index}/update-speaker")
+async def update_speaker(
+    interview_id: str,
+    segment_index: int,
+    utterance_index: int = Form(...),
+    key: str = Form(...),
+):
+    """Updates the speaker for a specific utterance."""
+    if not (interview := INTERVIEWS.get(interview_id)):
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    try:
+        segment = interview.segments[segment_index]
+        utterance = segment.utterances[utterance_index]
+    except IndexError:
+        raise HTTPException(status_code=404, detail="Segment or utterance not found")
+
+    # Update speaker if key is a digit
+    if key.isdigit():
+        utterance.speaker = f"S{key}"
+        INTERVIEWS.put(interview_id, interview)
+
+    # Return the updated utterance view
+    with tag.span(**{"data-speaker": utterance.speaker}):
+        classes(speaker_classes(utterance.speaker))
+        text(utterance.text)
 
 
 def main():
