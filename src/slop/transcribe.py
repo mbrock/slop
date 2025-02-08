@@ -3,6 +3,7 @@ import tempfile
 from contextlib import asynccontextmanager, contextmanager
 from io import BytesIO
 from pathlib import Path
+import re
 
 import trio
 from docx import Document
@@ -1059,21 +1060,36 @@ async def update_segment(
     except IndexError:
         raise HTTPException(status_code=404, detail="Segment not found")
 
+    # Get the last speaker from the previous segment if it exists
+    last_speaker = None
+    if segment_index > 0 and interview.segments[segment_index - 1].utterances:
+        last_speaker = interview.segments[segment_index - 1].utterances[-1].speaker
+
     # Parse the content into utterances
     utterances = []
+    current_speaker = last_speaker or "S1"  # Default to S1 if no previous speaker
+    speaker_pattern = re.compile(r'^\s*(\w+)\s*:\s*(.*)$')
+
     for line in content.strip().split("\n"):
         line = line.strip()
         if not line:
             continue
-        if ":" not in line:
-            continue
-        speaker, content = line.split(":", 1)
-        utterances.append(
-            Utterance(
-                speaker=speaker.strip(),
-                text=content.strip(),
+
+        if match := speaker_pattern.match(line):
+            # Line starts with a speaker tag
+            current_speaker = match.group(1)
+            text = match.group(2).strip()
+        else:
+            # Line continues with current speaker
+            text = line
+
+        if text:  # Only add if there's actual text content
+            utterances.append(
+                Utterance(
+                    speaker=current_speaker,
+                    text=text,
+                )
             )
-        )
 
     # Update the segment
     segment.utterances = utterances
