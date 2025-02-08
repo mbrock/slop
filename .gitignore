@@ -12,3 +12,4 @@ wheels/
 .env
 *.db
 .aider*
+repomix-output.txt
