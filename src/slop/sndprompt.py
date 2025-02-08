@@ -31,7 +31,7 @@ async def transcribe_audio_segment(
 ) -> tuple[list[Utterance], str]:
     """
     Transcribe an audio segment using Gemini.
-    Returns the transcribed utterances.
+    Returns the transcribed utterances and the segment's audio hash.
 
     Args:
         interview_id: The ID of the interview
@@ -45,67 +45,88 @@ async def transcribe_audio_segment(
     if not interview.audio_hash:
         raise HTTPException(status_code=400, detail="Interview has no audio")
 
-    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
-        # Get the full interview audio
-        audio_data, _ = BLOBS.get(interview.audio_hash)
-        tmp.write(audio_data)
-        tmp.flush()
-        tmp_path = Path(tmp.name)
+    # Find or create segment
+    segment = None
+    for s in interview.segments:
+        if s.start_time == start_time and s.end_time == end_time:
+            segment = s
+            break
 
-        try:
-            # Extract the segment audio
-            segment_audio = await extract_segment(tmp_path, start_time, end_time)
-            segment_hash = BLOBS.put(segment_audio, "audio/ogg")
+    if not segment:
+        segment = Segment(start_time=start_time, end_time=end_time)
 
-            # Upload segment to Gemini
-            client = GeminiClient()
-            file = await client.upload_bytes(
-                segment_audio,
-                mime_type="audio/ogg",
-                display_name=f"segment_{start_time}",
-            )
+    # Get or extract the audio segment
+    segment_audio = None
+    if segment.audio_hash:
+        if stored_segment := BLOBS.get(segment.audio_hash):
+            logger.info(f"Found cached audio segment {segment.audio_hash}")
+            segment_audio = stored_segment[0]
 
-            parts = []
+    if not segment_audio:
+        # Extract the segment if not cached
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            # Get the full interview audio
+            audio_data, _ = BLOBS.get(interview.audio_hash)
+            tmp.write(audio_data)
+            tmp.flush()
+            tmp_path = Path(tmp.name)
 
-            # Include previous segments as context if available
-            if context_segments:
-                for i, prev_segment in enumerate(context_segments):
-                    if prev_segment.audio_hash:
-                        prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
-                        prev_file = await client.upload_bytes(
-                            prev_audio_data,
-                            mime_type="audio/ogg",
-                            display_name=f"context_segment_{i}_{prev_segment.start_time}",
-                        )
-                        parts.append(Part(text=f'<audio id="{i}">'))
-                        parts.append(
-                            Part(
-                                fileData=FileData(
-                                    fileUri=prev_file.uri, mimeType="audio/ogg"
-                                )
-                            )
-                        )
-                        parts.append(Part(text="</audio>"))
-                        context_xml = (
-                            f'<transcript id="{i}">'
-                            + "".join(
-                                f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
-                                for u in prev_segment.utterances
-                            )
-                            + "</transcript>"
-                        )
-                        parts.append(Part(text=context_xml))
+            try:
+                # Extract the segment audio
+                segment_audio = await extract_segment(tmp_path, start_time, end_time)
+                # Store in blob store and update segment
+                segment.audio_hash = BLOBS.put(segment_audio, "audio/ogg")
+                logger.info(
+                    f"Extracted and stored new audio segment {segment.audio_hash}"
+                )
+            finally:
+                tmp_path.unlink()
 
-            # Add current segment's audio and instructions
-            parts.extend(
-                [
-                    Part(text='<audio id="current">'),
-                    Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
-                    Part(text="</audio>"),
-                    Part(
-                        text="""Format your response as XML with the following structure:
+    # Upload segment to Gemini
+    client = GeminiClient()
+    file = await client.upload_bytes(
+        segment_audio,
+        mime_type="audio/ogg",
+        display_name=f"segment_{start_time}",
+    )
 
-<transcript id="current">
+    parts = []
+
+    # Include previous segments as context if available
+    if context_segments:
+        for i, prev_segment in enumerate(context_segments):
+            if prev_segment.audio_hash:
+                prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
+                prev_file = await client.upload_bytes(
+                    prev_audio_data,
+                    mime_type="audio/ogg",
+                    display_name=f"context_segment_{i}_{prev_segment.start_time}",
+                )
+                parts.append(Part(text=f'<audio segment="{i}">'))
+                parts.append(
+                    Part(fileData=FileData(fileUri=prev_file.uri, mimeType="audio/ogg"))
+                )
+                parts.append(Part(text="</audio>"))
+                context_xml = (
+                    f'<transcript segment="{i}">'
+                    + "".join(
+                        f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
+                        for u in prev_segment.utterances
+                    )
+                    + "</transcript>"
+                )
+                parts.append(Part(text=context_xml))
+
+    # Add current segment's audio and instructions
+    parts.extend(
+        [
+            Part(text='<audio segment="current">'),
+            Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
+            Part(text="</audio>"),
+            Part(
+                text="""Format your response as XML with the following structure:
+
+<transcript segment="current">
   <sentence speaker="S1">Hello, how are you?</sentence>
   <sentence speaker="S2">I'm doing great, thanks.</sentence>
 </transcript>
@@ -113,52 +134,41 @@ async def transcribe_audio_segment(
 Guidelines:
 1. Use speaker IDs like S1, S2, etc. Ensure S1 is the interviewer.
 2. Keep natural sentence breaks - a sentence can be a single word or exclamation.
-3. Consider voice characteristics and context from previous segments.
-4. Output only valid XML with no extra text.
-5. Include the transcript element with 'id="current"' attribute.
+3. Output only valid XML with no extra text.
+4. Include the transcript element with 'segment="current"' attribute.
 """
-                    ),
-                ]
-            )
+            ),
+        ]
+    )
 
-            # Request transcription
-            request = GenerateRequest(
-                contents=[Content(role="user", parts=parts)],
-                generationConfig=GenerationConfig(temperature=0.3),
-            )
-            response = await client.generate_content_sync(
-                request, model=interview.model_name
-            )
+    # Request transcription
+    request = GenerateRequest(
+        contents=[Content(role="user", parts=parts)],
+        generationConfig=GenerationConfig(temperature=0.1),
+    )
+    response = await client.generate_content_sync(request, model=interview.model_name)
 
-            if not response.candidates:
-                raise HTTPException(
-                    status_code=500, detail="Failed to transcribe segment"
-                )
+    if not response.candidates:
+        raise HTTPException(status_code=500, detail="Failed to transcribe segment")
 
-            # Extract the text content
-            full_text = response.candidates[0].content.parts[0].text
+    # Extract the text content
+    full_text = response.candidates[0].content.parts[0].text
 
-            # Find the XML with segment attribute
-            xml_match = re.search(
-                r"<transcript\s+id=\"current\">(.*?)</transcript>",
-                full_text,
-                re.DOTALL,
-            )
-            if not xml_match:
-                raise HTTPException(
-                    status_code=500, detail="Failed to find transcription XML"
-                )
+    # Find the XML with segment attribute
+    xml_match = re.search(
+        r"<transcript\s+segment=\"current\">(.*?)</transcript>",
+        full_text,
+        re.DOTALL,
+    )
+    if not xml_match:
+        raise HTTPException(status_code=500, detail="Failed to find transcription XML")
 
-            xml_text = xml_match.group(0)
-            utterances = parse_transcription_xml(xml_text)
-            if not utterances:
-                raise HTTPException(
-                    status_code=500, detail="Failed to parse transcription XML"
-                )
+    xml_text = xml_match.group(0)
+    utterances = parse_transcription_xml(xml_text)
+    if not utterances:
+        raise HTTPException(status_code=500, detail="Failed to parse transcription XML")
 
-            return utterances, segment_hash
-        finally:
-            tmp_path.unlink()
+    return utterances, segment.audio_hash
 
 
 async def improve_speaker_identification_segment(
@@ -200,12 +210,12 @@ async def improve_speaker_identification_segment(
                     mime_type="audio/ogg",
                     display_name=f"context_segment_{i}_{prev_segment.start_time}",
                 )
-                parts.append(Part(text=f'<audio id="{i}">'))
+                parts.append(Part(text=f'<audio segment="{i}">'))
                 parts.append(
                     Part(fileData=FileData(fileUri=prev_file.uri, mimeType="audio/ogg"))
                 )
                 parts.append(Part(text="</audio>"))
-                parts.append(Part(text=f'<transcript id="{i}">'))
+                parts.append(Part(text=f'<transcript segment="{i}">'))
                 parts.append(
                     Part(
                         text="".join(
@@ -219,12 +229,11 @@ async def improve_speaker_identification_segment(
     # Add current segment with its current transcription
     parts.extend(
         [
-            Part(text="Current segment that needs speaker identification improvement:"),
-            Part(text='<audio id="current">'),
+            Part(text='<audio segment="current">'),
             Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
             Part(text="</audio>"),
             Part(
-                text='<transcript id="current">\n'
+                text='<transcript segment="current">\n'
                 + "".join(
                     f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
                     for u in current_utterances
@@ -237,17 +246,16 @@ async def improve_speaker_identification_segment(
 
 Format your response as XML with the following structure:
 
-<transcript id="current">
+<transcript segment="current">
 <sentence speaker="S1">Hello, how are you?</sentence>
 <sentence speaker="S2">I'm doing great, thanks.</sentence>
 </transcript>
 
 Guidelines:
-1. Use speaker IDs like S1, S2, etc. Ensure S1 is the interviewer.
-2. Keep natural sentence breaks - a sentence can be a single word or exclamation.
-3. Consider voice characteristics and context from previous segments.
-4. Output only valid XML with no extra text.
-5. Include the transcript element with 'id="current"' attribute.
+1. Use speaker IDs like S1, S2, etc.
+2. Consider voice characteristics and context from previous segments.
+3. Be intelligent about speaker identification based on the context and conversation.
+4. Include the transcript element with 'segment="current"' attribute.
 """
             ),
         ]
@@ -256,7 +264,7 @@ Guidelines:
     # Request improved speaker identification
     request = GenerateRequest(
         contents=[Content(role="user", parts=parts)],
-        generationConfig=GenerationConfig(temperature=0.4),
+        generationConfig=GenerationConfig(temperature=0.1),
     )
     response = await client.generate_content_sync(request, model=model_name)
     if not response.candidates:
@@ -269,7 +277,7 @@ Guidelines:
 
     # Find the XML with segment attribute
     xml_match = re.search(
-        r"<transcript\s+id=\"current\">(.*?)</transcript>", full_text, re.DOTALL
+        r"<transcript\s+segment=\"current\">(.*?)</transcript>", full_text, re.DOTALL
     )
     if not xml_match:
         raise HTTPException(status_code=500, detail="Failed to find transcription XML")
@@ -286,7 +294,7 @@ def parse_transcription_xml(xml_text: str) -> list[Utterance]:
     """
     Parse transcription XML into a list of Utterances.
     Expected format:
-        <transcript id="current">
+        <transcript segment="current">
             <sentence speaker="S1">Hello</sentence>
             ...
         </transcript>
@@ -314,11 +322,7 @@ async def extract_segment(input_path: Path, start_time: str, end_time: str) -> b
     Extract a segment from an audio file using ffmpeg.
     Returns the extracted segment as bytes.
     """
-    # Calculate input file hash
-    with open(input_path, "rb") as f:
-        input_hash = hashlib.sha256(f.read()).hexdigest()
-
-    logger.info(f"Extracting segment {input_hash} {start_time} {end_time}")
+    logger.info(f"Extracting segment from {start_time} to {end_time}")
 
     process = await trio.run_process(
         [
@@ -347,9 +351,4 @@ async def extract_segment(input_path: Path, start_time: str, end_time: str) -> b
         stderr = process.stderr.decode("utf-8", errors="replace")
         raise RuntimeError(f"FFmpeg failed: {stderr}")
 
-    output = process.stdout
-    output_hash = hashlib.sha256(output).hexdigest()
-
-    logger.info(f"Extracted segment {output_hash} {len(output)}")
-
-    return output
+    return process.stdout

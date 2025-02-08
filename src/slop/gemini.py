@@ -508,7 +508,7 @@ class GeminiClient:
     async def generate_content_sync(
         self,
         request: GenerateRequest,
-        model: str = "gemini-2.0-pro-exp-02-05",
+        model: str = "gemini-2.0-flash-exp",
     ) -> GenerateContentResponse:
         """Non-streaming version of generate_content"""
         url = f"{self.base_url}/v1beta/models/{model}:generateContent"
