@@ -1,8 +1,8 @@
+import logging
 import os
 from enum import Enum
 from pathlib import Path
 from typing import (
-    Annotated,
     Any,
     AsyncIterator,
     Dict,
@@ -10,16 +10,14 @@ from typing import (
     Literal,
     Optional,
     Type,
-    TypeVar,
     Union,
 )
 
 import httpx
-from httpx_sse import ServerSentEvent, aconnect_sse
-from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler
-from pydantic.alias_generators import to_camel
 import rich
-import logging
+from httpx_sse import ServerSentEvent, aconnect_sse
+from pydantic import BaseModel, Field
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -328,17 +326,29 @@ class GeminiClient:
                         case _:
                             rich.print(event)
 
-            # response = await client.post(
-            #     url,
-            #     params={"key": self.api_key},
-            #     json=json,
-            #     headers={"Content-Type": "application/json"},
-            # )
-            # body = response.json()
-            # if response.is_error or isinstance(body, list):
-            #     rich.print(body)
-            # response.raise_for_status()
-            # return GenerateContentResponse(**body)
+    async def get_file_metadata(self, file_name: str) -> Optional[File]:
+        """Get metadata for a specific file.
+
+        Args:
+            file_name: The name of the file (e.g. 'files/abc-123')
+
+        Returns:
+            File object containing metadata about the file, or None if not found
+        """
+        url = f"{self.base_url}/v1beta/{file_name}"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params={"key": self.api_key})
+            if response.status_code == 404 or response.status_code == 403:
+                return None
+            response.raise_for_status()
+            return File.model_validate(response.json())
+
+    def _generate_content_addressed_name(self, data: bytes, mime_type: str) -> str:
+        """Generate a content-addressed file name based on data hash."""
+        hash_obj = hashlib.sha256()
+        hash_obj.update(data)
+        hash_obj.update(mime_type.encode())
+        return f"files/{hash_obj.hexdigest()[:16]}"
 
     async def upload_bytes(
         self,
@@ -356,6 +366,17 @@ class GeminiClient:
         Returns:
             File object containing metadata about the uploaded file
         """
+        # Generate content-addressed name
+        file_name = self._generate_content_addressed_name(data, mime_type)
+
+        # Check if file already exists
+        if existing_file := await self.get_file_metadata(file_name):
+            if existing_file.state == FileState.ACTIVE:
+                logger.info(f"File already exists: {file_name}")
+                return existing_file
+            else:
+                logger.info(f"File exists but not active, state: {existing_file.state}")
+
         file_size = len(data)
 
         # Initial resumable upload request
@@ -369,11 +390,12 @@ class GeminiClient:
                 "X-Goog-Upload-Header-Content-Type": mime_type,
                 "Content-Type": "application/json",
             }
-            metadata = (
-                {"file": {"display_name": display_name}}
-                if display_name
-                else {"file": {}}
-            )
+            metadata = {
+                "file": {
+                    "name": file_name,
+                    **({"display_name": display_name} if display_name else {}),
+                }
+            }
             logger.info(f"Uploading file: {metadata}")
             response = await client.post(
                 url,

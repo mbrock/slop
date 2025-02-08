@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import re
 import tempfile
@@ -158,7 +159,6 @@ Guidelines:
             return utterances, segment_hash
         finally:
             tmp_path.unlink()
-            await client.delete_file(file.name)
 
 
 async def improve_speaker_identification_segment(
@@ -188,65 +188,58 @@ async def improve_speaker_identification_segment(
         display_name="segment_to_improve",
     )
 
-    try:
-        parts = []
+    parts = []
 
-        # Include previous segments as context
-        if context_segments:
-            for i, prev_segment in enumerate(context_segments):
-                if prev_segment.audio_hash:
-                    prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
-                    prev_file = await client.upload_bytes(
-                        prev_audio_data,
-                        mime_type="audio/ogg",
-                        display_name=f"context_segment_{i}_{prev_segment.start_time}",
-                    )
-                    parts.append(Part(text=f'<audio id="{i}">'))
-                    parts.append(
-                        Part(
-                            fileData=FileData(
-                                fileUri=prev_file.uri, mimeType="audio/ogg"
-                            )
+    # Include previous segments as context
+    if context_segments:
+        for i, prev_segment in enumerate(context_segments):
+            if prev_segment.audio_hash:
+                prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
+                prev_file = await client.upload_bytes(
+                    prev_audio_data,
+                    mime_type="audio/ogg",
+                    display_name=f"context_segment_{i}_{prev_segment.start_time}",
+                )
+                parts.append(Part(text=f'<audio id="{i}">'))
+                parts.append(
+                    Part(fileData=FileData(fileUri=prev_file.uri, mimeType="audio/ogg"))
+                )
+                parts.append(Part(text="</audio>"))
+                parts.append(Part(text=f'<transcript id="{i}">'))
+                parts.append(
+                    Part(
+                        text="".join(
+                            f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
+                            for u in prev_segment.utterances
                         )
                     )
-                    parts.append(Part(text="</audio>"))
-                    parts.append(Part(text=f'<transcript id="{i}">'))
-                    parts.append(
-                        Part(
-                            text="".join(
-                                f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
-                                for u in prev_segment.utterances
-                            )
-                        )
-                    )
-                    parts.append(Part(text="</transcript>"))
+                )
+                parts.append(Part(text="</transcript>"))
 
-        # Add current segment with its current transcription
-        parts.extend(
-            [
-                Part(
-                    text="Current segment that needs speaker identification improvement:"
-                ),
-                Part(text='<audio id="current">'),
-                Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
-                Part(text="</audio>"),
-                Part(
-                    text='<transcript id="current">\n'
-                    + "".join(
-                        f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
-                        for u in current_utterances
-                    )
-                    + "\n</transcript>"
-                ),
-                Part(
-                    text=f"""Please improve the speaker identification in this segment.
+    # Add current segment with its current transcription
+    parts.extend(
+        [
+            Part(text="Current segment that needs speaker identification improvement:"),
+            Part(text='<audio id="current">'),
+            Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
+            Part(text="</audio>"),
+            Part(
+                text='<transcript id="current">\n'
+                + "".join(
+                    f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
+                    for u in current_utterances
+                )
+                + "\n</transcript>"
+            ),
+            Part(
+                text=f"""Please improve the speaker identification in this segment.
 {f"User hint about the speakers: {hint}" if hint else ""}
 
 Format your response as XML with the following structure:
 
 <transcript id="current">
-  <sentence speaker="S1">Hello, how are you?</sentence>
-  <sentence speaker="S2">I'm doing great, thanks.</sentence>
+<sentence speaker="S1">Hello, how are you?</sentence>
+<sentence speaker="S2">I'm doing great, thanks.</sentence>
 </transcript>
 
 Guidelines:
@@ -256,44 +249,37 @@ Guidelines:
 4. Output only valid XML with no extra text.
 5. Include the transcript element with 'id="current"' attribute.
 """
-                ),
-            ]
+            ),
+        ]
+    )
+
+    # Request improved speaker identification
+    request = GenerateRequest(
+        contents=[Content(role="user", parts=parts)],
+        generationConfig=GenerationConfig(temperature=0.4),
+    )
+    response = await client.generate_content_sync(request, model=model_name)
+    if not response.candidates:
+        raise HTTPException(
+            status_code=500, detail="Failed to improve speaker identification"
         )
 
-        # Request improved speaker identification
-        request = GenerateRequest(
-            contents=[Content(role="user", parts=parts)],
-            generationConfig=GenerationConfig(temperature=0.4),
-        )
-        response = await client.generate_content_sync(request, model=model_name)
-        if not response.candidates:
-            raise HTTPException(
-                status_code=500, detail="Failed to improve speaker identification"
-            )
+    # Extract the text content
+    full_text = response.candidates[0].content.parts[0].text
 
-        # Extract the text content
-        full_text = response.candidates[0].content.parts[0].text
+    # Find the XML with segment attribute
+    xml_match = re.search(
+        r"<transcript\s+id=\"current\">(.*?)</transcript>", full_text, re.DOTALL
+    )
+    if not xml_match:
+        raise HTTPException(status_code=500, detail="Failed to find transcription XML")
 
-        # Find the XML with segment attribute
-        xml_match = re.search(
-            r"<transcript\s+id=\"current\">(.*?)</transcript>", full_text, re.DOTALL
-        )
-        if not xml_match:
-            raise HTTPException(
-                status_code=500, detail="Failed to find transcription XML"
-            )
+    xml_text = xml_match.group(0)
+    utterances = parse_transcription_xml(xml_text)
+    if not utterances:
+        raise HTTPException(status_code=500, detail="Failed to parse transcription XML")
 
-        xml_text = xml_match.group(0)
-        utterances = parse_transcription_xml(xml_text)
-        if not utterances:
-            raise HTTPException(
-                status_code=500, detail="Failed to parse transcription XML"
-            )
-
-        return utterances
-
-    finally:
-        await client.delete_file(file.name)
+    return utterances
 
 
 def parse_transcription_xml(xml_text: str) -> list[Utterance]:
@@ -328,12 +314,17 @@ async def extract_segment(input_path: Path, start_time: str, end_time: str) -> b
     Extract a segment from an audio file using ffmpeg.
     Returns the extracted segment as bytes.
     """
-    rich.print(
-        {"input_path": str(input_path), "start_time": start_time, "end_time": end_time}
-    )
+    # Calculate input file hash
+    with open(input_path, "rb") as f:
+        input_hash = hashlib.sha256(f.read()).hexdigest()
+
+    logger.info(f"Extracting segment {input_hash} {start_time} {end_time}")
+
     process = await trio.run_process(
         [
             "ffmpeg",
+            "-flags",
+            "+bitexact",
             "-i",
             str(input_path),
             "-ss",
@@ -356,4 +347,9 @@ async def extract_segment(input_path: Path, start_time: str, end_time: str) -> b
         stderr = process.stderr.decode("utf-8", errors="replace")
         raise RuntimeError(f"FFmpeg failed: {stderr}")
 
-    return process.stdout
+    output = process.stdout
+    output_hash = hashlib.sha256(output).hexdigest()
+
+    logger.info(f"Extracted segment {output_hash} {len(output)}")
+
+    return output
