@@ -105,12 +105,12 @@ class BlobStore:
 data_dir = os.getenv("IEVA_DATA", "/data")
 
 
-class Store:
+class Store[T: BaseModel]:
     """
     A simple key-value store using SQLite and a Pydantic model.
     """
 
-    def __init__(self, db_path: str | Path, model_class: type[BaseModel]):
+    def __init__(self, db_path: str | Path, model_class: type[T]):
         self.db_path = Path(db_path)
         self.model_class = model_class
         self._init_db()
@@ -128,7 +128,7 @@ class Store:
                 """
             )
 
-    def get(self, key: str) -> BaseModel | None:
+    def get(self, key: str) -> T | None:
         """Get a value by key."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("SELECT value FROM store WHERE key = ?", (key,))
@@ -136,7 +136,7 @@ class Store:
                 return self.model_class.model_validate_json(row[0])
             return None
 
-    def put(self, key: str, value: BaseModel):
+    def put(self, key: str, value: T):
         """Store a value by key."""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
@@ -144,7 +144,7 @@ class Store:
                 (key, value.model_dump_json()),
             )
 
-    def values(self) -> list[BaseModel]:
+    def values(self) -> list[T]:
         """Get all values."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("SELECT value FROM store")
@@ -154,5 +154,5 @@ class Store:
             ]
 
 
-INTERVIEWS = Store(Path(data_dir, "interviews.db"), Interview)
+INTERVIEWS = Store[Interview](Path(data_dir, "interviews.db"), Interview)
 BLOBS = BlobStore(Path(data_dir, "blobs.db"))
