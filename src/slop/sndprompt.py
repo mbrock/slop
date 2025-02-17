@@ -23,6 +23,22 @@ from slop.models import BLOBS, INTERVIEWS, Segment, Utterance
 logger = logging.getLogger(__name__)
 
 
+TRANSCRIPTION_INSTRUCTIONS = """Format your response as XML with the following structure:
+
+<transcript>
+  <sentence speaker="S1">Hello, how are you?</sentence>
+  <sentence speaker="S2">I'm doing great, thanks.</sentence>
+</transcript>
+
+Guidelines:
+1. Use speaker IDs like S1, S2, etc. Ensure S1 is the interviewer.
+2. Keep natural sentence breaks - a sentence can be a single word or exclamation.
+3. Output only valid XML with no extra text.
+4. Include the transcript element.
+5. The content is vetted for safety. You may omit prohibited content but it shouldn't be necessary for these ethnographic interviews.
+"""
+
+
 async def transcribe_audio_segment_v1(
     interview_id: str,
     start_time: str,
@@ -255,21 +271,7 @@ async def transcribe_audio_segment(
                         Content(
                             role="user",
                             parts=[
-                                Part(
-                                    text="""Format your response as XML with the following structure:
-
-<transcript>
-  <sentence speaker="S1">Hello, how are you?</sentence>
-  <sentence speaker="S2">I'm doing great, thanks.</sentence>
-</transcript>
-
-Guidelines:
-1. Use speaker IDs like S1, S2, etc. Ensure S1 is the interviewer.
-2. Keep natural sentence breaks - a sentence can be a single word or exclamation.
-3. Output only valid XML with no extra text.
-4. Include the transcript element.
-"""
-                                ),
+                                Part(text=TRANSCRIPTION_INSTRUCTIONS),
                                 Part(text="<audio>"),
                                 Part(
                                     fileData=FileData(
@@ -314,6 +316,8 @@ Guidelines:
         Content(
             role="user",
             parts=[
+                # Add transcription instructions if this is the first and only turn
+                *([] if context_segments else [Part(text=TRANSCRIPTION_INSTRUCTIONS)]),
                 Part(text="<audio>"),
                 Part(
                     fileData=FileData(

@@ -199,7 +199,7 @@ class FinishReason(str, Enum):
 class UsageMetadata(BaseModel):
     promptTokenCount: int
     cachedContentTokenCount: Optional[int] = None
-    candidatesTokenCount: int
+    candidatesTokenCount: Optional[int] = None
     totalTokenCount: int
 
 
@@ -213,7 +213,7 @@ class BlockReason(str, Enum):
 
 class PromptFeedback(BaseModel):
     blockReason: Optional[BlockReason] = None
-    safetyRatings: List[SafetyRating]
+    safetyRatings: Optional[List[SafetyRating]] = None
 
 
 class Candidate(BaseModel):
@@ -546,14 +546,16 @@ class GeminiClient:
                         raise GeminiError(f"API error: {error_message}", error_data)
 
                 response.raise_for_status()
+
                 return GenerateContentResponse.model_validate(response.json())
-            except httpx.TimeoutError:
+            except httpx.TimeoutException:
                 raise GeminiError("Request timed out. Please try again.")
             except httpx.HTTPError as e:
                 rich.print(f"HTTP error occurred: {e}")
                 raise GeminiError(f"HTTP error: {str(e)}")
             except Exception as e:
                 rich.print(f"Unexpected error: {e}")
+                rich.print(response.text)
                 raise GeminiError(f"Unexpected error: {str(e)}")
 
 
