@@ -1068,7 +1068,7 @@ async def update_segment(
     # Parse the content into utterances
     utterances = []
     current_speaker = last_speaker or "S1"  # Default to S1 if no previous speaker
-    speaker_pattern = re.compile(r'^\s*(\w+)\s*:\s*(.*)$')
+    speaker_pattern = re.compile(r"^\s*(\w+)\s*:\s*(.*)$")
 
     for line in content.strip().split("\n"):
         line = line.strip()
@@ -1147,7 +1147,12 @@ async def export_interview(interview_id: str):
     docx_bytes.seek(0)
 
     # Return as downloadable file
-    filename = f"{interview.filename.replace(' ', '_')}.docx"
+    # Normalize filename: replace spaces with underscores and remove/replace any problematic characters
+    safe_filename = re.sub(r"[^\w\-\.]", "_", interview.filename.replace(" ", "_"))
+    # Ensure ASCII encoding for Content-Disposition header
+    encoded_filename = safe_filename.encode("ascii", "ignore").decode("ascii")
+    filename = f"{encoded_filename}.docx"
+
     return StreamingResponse(
         docx_bytes,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
