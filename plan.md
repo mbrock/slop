@@ -2,7 +2,7 @@
 
 I need to make a web app for transcribing long interviews.
 
-Use FastAPI with Trio, Hypercorn, HTMX, Tailwind, and Tagflow.
+Use FastAPI with AnyIO, HTMX, Tailwind, and Tagflow.
 
 ## Workflow
 

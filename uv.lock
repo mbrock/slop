@@ -385,6 +385,7 @@ name = "slop"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "httpx" },
     { name = "httpx-sse" },
     { name = "pydantic" },
@@ -393,11 +394,11 @@ dependencies = [
     { name = "python-multipart" },
     { name = "rich" },
     { name = "tagflow" },
-    { name = "trio" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.10.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "httpx-sse", specifier = ">=0.4.0" },
     { name = "pydantic", specifier = ">=2.6.0" },
@@ -406,7 +407,6 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "rich", specifier = ">=13.9.4" },
     { name = "tagflow", specifier = "==0.12.0" },
-    { name = "trio", specifier = ">=0.28.0" },
 ]
 
 [[package]]

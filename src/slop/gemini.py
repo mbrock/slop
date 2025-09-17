@@ -595,6 +595,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    import trio
+    import anyio
 
-    trio.run(main)
+    anyio.run(main)

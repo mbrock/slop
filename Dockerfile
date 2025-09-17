@@ -30,4 +30,4 @@ RUN uv sync --frozen
 
 ENV IEVA_DATA=/data
 
-CMD ["uv", "run", "src/slop/transcribe.py"]
+CMD ["uv", "run", "fastapi", "run", "src.slop.transcribe:app", "--host", "0.0.0.0", "--port", "8080"]

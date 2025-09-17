@@ -5,10 +5,11 @@ import tempfile
 import xml.etree.ElementTree as ET
 from io import StringIO
 from pathlib import Path
+from subprocess import PIPE
 
 from fastapi import HTTPException
+import anyio
 import rich
-import trio
 
 from slop.gemini import (
     Content,
@@ -507,7 +508,7 @@ async def extract_segment(input_path: Path, start_time: str, end_time: str) -> b
     """
     logger.info(f"Extracting segment from {start_time} to {end_time}")
 
-    process = await trio.run_process(
+    process = await anyio.run_process(
         [
             "ffmpeg",
             "-flags",
@@ -526,8 +527,9 @@ async def extract_segment(input_path: Path, start_time: str, end_time: str) -> b
             "ogg",  # Output format
             "pipe:1",  # Output to stdout
         ],
-        capture_stdout=True,
-        capture_stderr=True,
+        stdout=PIPE,
+        stderr=PIPE,
+        check=False,
     )
 
     if process.returncode != 0:

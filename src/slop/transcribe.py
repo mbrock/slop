@@ -1,11 +1,12 @@
 import logging
+import re
 import tempfile
 from contextlib import asynccontextmanager, contextmanager
 from io import BytesIO
 from pathlib import Path
-import re
+from subprocess import PIPE
 
-import trio
+import anyio
 from docx import Document
 from docx.shared import Pt
 from fastapi import FastAPI, Form, HTTPException, Request, Response, UploadFile
@@ -197,7 +198,7 @@ async def process_audio(input_path: Path) -> bytes:
     Returns the processed audio as bytes.
     """
     logger.info(f"Processing audio file: {input_path}")
-    process = await trio.run_process(
+    process = await anyio.run_process(
         [
             "ffmpeg",
             "-i",
@@ -210,8 +211,9 @@ async def process_audio(input_path: Path) -> bytes:
             "ogg",  # Output format
             "pipe:1",  # Output to stdout
         ],
-        capture_stdout=True,
-        capture_stderr=True,
+        stdout=PIPE,
+        stderr=PIPE,
+        check=False,
     )
 
     logger.info(f"FFmpeg process {process.returncode}")
@@ -1020,7 +1022,7 @@ async def get_audio_duration(input_path: Path) -> str:
     Get the duration of an audio file using ffprobe.
     Returns duration in HH:MM:SS format.
     """
-    process = await trio.run_process(
+    process = await anyio.run_process(
         [
             "ffprobe",
             "-v",
@@ -1031,8 +1033,9 @@ async def get_audio_duration(input_path: Path) -> str:
             "default=noprint_wrappers=1:nokey=1",
             str(input_path),
         ],
-        capture_stdout=True,
-        capture_stderr=True,
+        stdout=PIPE,
+        stderr=PIPE,
+        check=False,
     )
 
     if process.returncode != 0:
@@ -1211,28 +1214,3 @@ async def update_speaker(
 
     # Return the updated utterance view
     return render_utterance(interview_id, segment_index, utterance_index, utterance)
-
-
-def main():
-    """
-    Runs the application with Hypercorn and Trio.
-    """
-    import hypercorn.config
-    import hypercorn.trio
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(message)s",
-        datefmt="[%X]",
-        #        handlers=[RichHandler(rich_tracebacks=True)],
-    )
-
-    config = hypercorn.config.Config()
-    config.bind = ["0.0.0.0:8080"]
-    config.worker_class = "trio"
-
-    trio.run(hypercorn.trio.serve, app, config)
-
-
-if __name__ == "__main__":
-    main()

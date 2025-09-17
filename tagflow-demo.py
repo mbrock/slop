@@ -1,8 +1,7 @@
 # /// script
 # dependencies = [
 #     "tagflow",
-#     "trio",
-#     "hypercorn",
+#     "anyio",
 #     "rich",
 # ]
 # ///
@@ -11,6 +10,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import List
 import logging
+import anyio
 
 from fastapi import FastAPI
 from tagflow import (
@@ -191,7 +191,7 @@ async def counter():
                                     clear()
                                     text(str(i))
 
-                                await trio.sleep(1)
+                                await anyio.sleep(1)
                                 i += 1
                         finally:
                             # If the task is cancelled, we stop the counter.
@@ -203,29 +203,3 @@ async def counter():
                     await spawn(update_counter)
 
     logger.info("rendered counter page for %s", session.id)
-
-
-if __name__ == "__main__":
-    import trio
-    import hypercorn.trio
-    import hypercorn.config
-    import logging
-    from rich.logging import RichHandler
-
-    logging.basicConfig(
-        level=logging.NOTSET,
-        format="%(message)s",
-        datefmt="[%X]",
-        handlers=[RichHandler(rich_tracebacks=True)],
-    )
-
-    config = hypercorn.config.Config()
-    config.bind = ["localhost:8000"]
-    # Use trio worker class
-    config.worker_class = "trio"
-
-    trio.run(
-        hypercorn.trio.serve,
-        app,
-        config,
-    )

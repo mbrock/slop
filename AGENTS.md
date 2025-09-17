@@ -21,7 +21,7 @@
 ## External Dependencies & Services
 - Requires `ffmpeg` for audio normalization and segment extraction; installed in the provided Dockerfile image.
 - Depends on `GOOGLE_API_KEY` for Gemini access; uploads use resumable sessions and deduplicate by hash.
-- Async stack built on Trio, HTTPX (with `httpx-sse`), TagFlow, and Pydantic v2.
+- Async stack built on AnyIO, HTTPX (with `httpx-sse`), TagFlow, and Pydantic v2.
 - UI assets leverage CDN-hosted Tailwind, HTMX, HyperScript, and Media Chrome components at runtime.
 
 ## Runtime Workflow
@@ -33,7 +33,7 @@
 
 ## Development & Ops Notes
 - Python 3.13 project managed with `uv`; lockfile `uv.lock` ensures deterministic installs.
-- Docker image bundles dependencies, sets `IEVA_DATA=/data`, and launches `uv run src/slop/transcribe.py`.
+- Docker image bundles dependencies, sets `IEVA_DATA=/data`, and launches `uv run fastapi run src.slop.transcribe:app --host 0.0.0.0 --port 8080`.
+- Local development works well with `uv run fastapi dev src.slop.transcribe:app`.
 - `tagflow-demo.py` offers a lightweight example of TagFlow usage outside the main app.
 - No automated tests yet; manual verification typically involves running the FastAPI server and exercising HTMX flows.
-
