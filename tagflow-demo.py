@@ -173,9 +173,7 @@ async def counter():
             with tag.h1(classes="text-4xl font-bold mb-8"):
                 text("Live Counter Demo")
 
-            with tag.div(
-                classes="bg-white rounded-lg shadow p-8 inline-block"
-            ):
+            with tag.div(classes="bg-white rounded-lg shadow p-8 inline-block"):
                 with tag.div(classes="text-6xl font-mono"):
                     # We define a background task that changes the counter value
                     # every second.
@@ -195,9 +193,7 @@ async def counter():
                                 i += 1
                         finally:
                             # If the task is cancelled, we stop the counter.
-                            logger.info(
-                                "counter task cancelled %s", session.id
-                            )
+                            logger.info("counter task cancelled %s", session.id)
 
                     # Start the task as a child of the live session.
                     await spawn(update_counter)

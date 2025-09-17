@@ -1,4 +1,3 @@
-import hashlib
 import logging
 import re
 import tempfile
@@ -9,7 +8,6 @@ from subprocess import PIPE
 
 from fastapi import HTTPException
 import anyio
-import rich
 
 from slop.gemini import (
     Content,
@@ -73,7 +71,7 @@ async def transcribe_audio_segment_v1(
         segment = Segment(start_time=start_time, end_time=end_time)
 
     # Get or extract the audio segment
-    segment_audio = None
+    segment_audio: bytes | None = None
     if segment.audio_hash:
         if stored_segment := BLOBS.get(segment.audio_hash):
             logger.info(f"Found cached audio segment {segment.audio_hash}")
@@ -83,7 +81,13 @@ async def transcribe_audio_segment_v1(
         # Extract the segment if not cached
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
             # Get the full interview audio
-            audio_data, _ = BLOBS.get(interview.audio_hash)
+            interview_blob = BLOBS.get(interview.audio_hash)
+            if not interview_blob:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Interview audio blob not found",
+                )
+            audio_data, _ = interview_blob
             tmp.write(audio_data)
             tmp.flush()
             tmp_path = Path(tmp.name)
@@ -101,6 +105,12 @@ async def transcribe_audio_segment_v1(
 
     # Upload segment to Gemini
     client = GeminiClient()
+    if segment_audio is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to load audio segment",
+        )
+
     file = await client.upload_bytes(
         segment_audio,
         mime_type="audio/ogg",
@@ -113,7 +123,14 @@ async def transcribe_audio_segment_v1(
     if context_segments:
         for i, prev_segment in enumerate(context_segments):
             if prev_segment.audio_hash:
-                prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
+                prev_blob = BLOBS.get(prev_segment.audio_hash)
+                if not prev_blob:
+                    logger.warning(
+                        "Missing audio blob for previous segment %s",
+                        prev_segment.audio_hash,
+                    )
+                    continue
+                prev_audio_data, _ = prev_blob
                 prev_file = await client.upload_bytes(
                     prev_audio_data,
                     mime_type="audio/ogg",
@@ -185,7 +202,14 @@ Guidelines:
     if not utterances:
         raise HTTPException(status_code=500, detail="Failed to parse transcription XML")
 
+    if not segment.audio_hash:
+        raise HTTPException(
+            status_code=500,
+            detail="Audio hash missing for segment",
+        )
+
     return utterances, segment.audio_hash
+
 
 async def transcribe_audio_segment(
     interview_id: str,
@@ -221,7 +245,7 @@ async def transcribe_audio_segment(
         segment = Segment(start_time=start_time, end_time=end_time)
 
     # Get or extract the audio segment.
-    segment_audio = None
+    segment_audio: bytes | None = None
     if segment.audio_hash:
         if stored_segment := BLOBS.get(segment.audio_hash):
             logger.info(f"Found cached audio segment {segment.audio_hash}")
@@ -231,7 +255,13 @@ async def transcribe_audio_segment(
         # Extract the segment if not cached.
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
             # Get the full interview audio.
-            audio_data, _ = BLOBS.get(interview.audio_hash)
+            interview_blob = BLOBS.get(interview.audio_hash)
+            if not interview_blob:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Interview audio blob not found",
+                )
+            audio_data, _ = interview_blob
             tmp.write(audio_data)
             tmp.flush()
             tmp_path = Path(tmp.name)
@@ -241,12 +271,20 @@ async def transcribe_audio_segment(
                 segment_audio = await extract_segment(tmp_path, start_time, end_time)
                 # Store in blob store and update segment.
                 segment.audio_hash = BLOBS.put(segment_audio, "audio/ogg")
-                logger.info(f"Extracted and stored new audio segment {segment.audio_hash}")
+                logger.info(
+                    f"Extracted and stored new audio segment {segment.audio_hash}"
+                )
             finally:
                 tmp_path.unlink()
 
     # Upload the current segment audio to Gemini.
     client = GeminiClient()
+    if segment_audio is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to load audio segment",
+        )
+
     current_file = await client.upload_bytes(
         segment_audio,
         mime_type="audio/ogg",
@@ -260,7 +298,14 @@ async def transcribe_audio_segment(
     if context_segments:
         for i, prev_segment in enumerate(context_segments):
             if prev_segment.audio_hash:
-                prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
+                prev_blob = BLOBS.get(prev_segment.audio_hash)
+                if not prev_blob:
+                    logger.warning(
+                        "Missing audio blob for previous segment %s",
+                        prev_segment.audio_hash,
+                    )
+                    continue
+                prev_audio_data, _ = prev_blob
                 prev_file = await client.upload_bytes(
                     prev_audio_data,
                     mime_type="audio/ogg",
@@ -320,11 +365,7 @@ async def transcribe_audio_segment(
                 # Add transcription instructions if this is the first and only turn
                 *([] if context_segments else [Part(text=TRANSCRIPTION_INSTRUCTIONS)]),
                 Part(text="<audio>"),
-                Part(
-                    fileData=FileData(
-                        fileUri=current_file.uri, mimeType="audio/ogg"
-                    )
-                ),
+                Part(fileData=FileData(fileUri=current_file.uri, mimeType="audio/ogg")),
                 Part(text="</audio>"),
             ],
         )
@@ -353,7 +394,14 @@ async def transcribe_audio_segment(
     if not utterances:
         raise HTTPException(status_code=500, detail="Failed to parse transcription XML")
 
+    if not segment.audio_hash:
+        raise HTTPException(
+            status_code=500,
+            detail="Audio hash missing for segment",
+        )
+
     return utterances, segment.audio_hash
+
 
 async def improve_speaker_identification_segment(
     segment_audio: bytes,
@@ -388,7 +436,14 @@ async def improve_speaker_identification_segment(
     if context_segments:
         for i, prev_segment in enumerate(context_segments):
             if prev_segment.audio_hash:
-                prev_audio_data, _ = BLOBS.get(prev_segment.audio_hash)
+                prev_blob = BLOBS.get(prev_segment.audio_hash)
+                if not prev_blob:
+                    logger.warning(
+                        "Missing audio blob for previous segment %s",
+                        prev_segment.audio_hash,
+                    )
+                    continue
+                prev_audio_data, _ = prev_blob
                 prev_file = await client.upload_bytes(
                     prev_audio_data,
                     mime_type="audio/ogg",
@@ -488,9 +543,10 @@ def parse_transcription_xml(xml_text: str) -> list[Utterance]:
         root = tree.getroot()
         utterances = []
         for sent in root.findall("sentence"):
+            speaker = sent.get("speaker") or "UNK"
             utterances.append(
                 Utterance(
-                    speaker=sent.get("speaker"),
+                    speaker=speaker,
                     text=sent.text.strip() if sent.text else "",
                 )
             )

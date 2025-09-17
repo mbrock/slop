@@ -233,8 +233,10 @@ async def upload_audio(audio: UploadFile):
     3. Creates an Interview record
     4. Redirects to the interview page
     """
+    upload_name = audio.filename or "upload.ogg"
+
     with tempfile.NamedTemporaryFile(
-        delete=False, suffix=Path(audio.filename).suffix
+        delete=False, suffix=Path(upload_name).suffix
     ) as tmp:
         content = await audio.read()
         tmp.write(content)
@@ -253,7 +255,7 @@ async def upload_audio(audio: UploadFile):
             interview_id = str(len(list(INTERVIEWS.values())) + 1)
             interview = Interview(
                 id=interview_id,
-                filename=audio.filename,
+                filename=upload_name,
                 audio_hash=audio_hash,
                 duration=duration,
             )
@@ -519,6 +521,10 @@ def button_view(label: str, href: str | None = None, type: str = "button", **att
 
 def interview_header(title: str, interview_id: str):
     """Renders the interview header with title and action buttons."""
+    interview = INTERVIEWS.get(interview_id)
+    context_segments_value = str(interview.context_segments) if interview else "0"
+    model_name_value = interview.model_name if interview else ""
+
     with tag.div():
         breadcrumb({"Ieva's Interviews": "/", title: "#"})
         with tag.div(
@@ -543,7 +549,7 @@ def interview_header(title: str, interview_id: str):
                         name="context_segments",
                         min="0",
                         max="5",
-                        value=str(INTERVIEWS.get(interview_id).context_segments),
+                        value=context_segments_value,
                         classes="w-16 px-2 py-1 text-sm border rounded",
                         **{
                             "hx-post": f"/interview/{interview_id}/context-segments",
@@ -572,8 +578,7 @@ def interview_header(title: str, interview_id: str):
                                     type="radio",
                                     name="model_name",
                                     value=model,
-                                    checked=INTERVIEWS.get(interview_id).model_name
-                                    == model,
+                                    checked=model_name_value == model,
                                     classes="text-blue-600",
                                     **{
                                         "hx-post": f"/interview/{interview_id}/model",
@@ -989,7 +994,11 @@ async def improve_speaker_identification(
     if not segment.audio_hash:
         raise HTTPException(status_code=400, detail="Segment has no audio")
 
-    audio_data, _ = BLOBS.get(segment.audio_hash)
+    segment_blob = BLOBS.get(segment.audio_hash)
+    if not segment_blob:
+        raise HTTPException(status_code=404, detail="Segment audio not found")
+
+    audio_data, _ = segment_blob
 
     # Improve speaker identification
     utterances = await improve_speaker_identification_segment(

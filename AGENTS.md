@@ -12,6 +12,11 @@
 - **Persistence layer (`src/slop/models.py`)** defines Pydantic models for interviews, segments, and utterances plus two SQLite-backed stores: a JSON key-value `Store` and binary `BlobStore`.
 - **Presentation helpers (`src/slop/views.py`)** centralize reusable UI fragments such as upload areas, audio players, and styling rules.
 
+## Checking, Linting, Formatting, Fixing
+
+Type check with `uvx ty check`, lint with `uvx ruff check`, fix with `uvx ruff check --fix`,
+format with `uvx ruff format`.
+
 ## Data & Persistence
 - Audio and transcript metadata live under the `IEVA_DATA` directory (defaults to `/data`).
 - `BLOBS` table stores content-addressed binary payloads (e.g., processed audio segments) hashed with SHA-256.
