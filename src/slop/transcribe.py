@@ -561,8 +561,9 @@ def interview_header(title: str, interview_id: str):
                         text("Model:")
                     with tag.div(classes="flex gap-2"):
                         for model in [
-                            "gemini-2.0-flash-exp",
-                            "gemini-2.0-pro-exp-02-05",
+                            "gemini-2.5-flash",
+                            "gemini-2.5-pro",
+                            "gemini-2.5-flash-lite",
                         ]:
                             with tag.label(classes="flex items-center gap-1"):
                                 with tag.input(
@@ -580,7 +581,7 @@ def interview_header(title: str, interview_id: str):
                                 ):
                                     pass
                                 with tag.span(classes="text-sm text-gray-600"):
-                                    text("Flash" if "flash" in model.lower() else "Pro")
+                                    text(model)
 
                 with tag.form(
                     action=f"/interview/{interview_id}/rename",

@@ -283,9 +283,9 @@ class ModelOverloadedError(GeminiError):
     def __init__(self, current_model: str):
         self.current_model = current_model
         self.alternative_model = (
-            "gemini-2.0-flash-exp"
+            "gemini-2.5-flash"
             if "pro" in current_model
-            else "gemini-2.0-pro-exp-02-05"
+            else "gemini-2.5-flash-lite"
         )
         super().__init__(
             f"Model {current_model} is overloaded. Consider trying {self.alternative_model}"
