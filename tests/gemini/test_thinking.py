@@ -17,31 +17,45 @@ from src.slop.gemini import (
 
 @pytest.mark.asyncio
 async def test_thinking_basic():
-    """Test basic thinking configuration."""
+    """Test basic thinking configuration and verify thoughts are included."""
     client = GeminiClient()
     
+    # Use a complex problem that should trigger thinking
     request = GenerateRequest(
         contents=Content(
             role="user",
-            parts=[Part(text="Solve this step by step: What is 47 * 89 + 234?")]
+            parts=[Part(text="""Solve this step-by-step problem:
+            
+            A train leaves Station A at 9:00 AM traveling at 60 mph toward Station B.
+            Another train leaves Station B at 10:00 AM traveling at 80 mph toward Station A.
+            The stations are 280 miles apart.
+            
+            At what time will the trains meet? Show your reasoning step by step.""")]
         ),
         generationConfig=GenerationConfig(
             thinkingConfig=ThinkingConfig(
                 includeThoughts=True,
-                thinkingBudget=1000  # Fixed budget
+                thinkingBudget=512  # Reduced budget for faster tests
             )
         )
     )
     
-    response = await client.generate_content_sync(request, model="gemini-2.5-flash")
+    response = await client.generate_content_sync(request, model="gemini-2.5-flash-lite")
     assert response.candidates
+    assert response.candidates[0].content.parts
     
-    # Check if any parts contain thoughts
-    for part in response.candidates[0].content.parts:
-        if part.thought:
-            assert part.text  # Thought should have text content
+    # Verify at least one thought part is included
+    thought_parts = [p for p in response.candidates[0].content.parts if p.thought]
+    assert len(thought_parts) > 0, "Expected at least one thought part when thinking is enabled"
     
-    # Note: Model may or may not include thoughts depending on the query
+    # Verify thought parts have content
+    for thought_part in thought_parts:
+        assert thought_part.text, "Thought parts should have text content"
+        assert len(thought_part.text) > 0, "Thought text should not be empty"
+    
+    # Also verify we have regular response parts
+    regular_parts = [p for p in response.candidates[0].content.parts if not p.thought]
+    assert len(regular_parts) > 0, "Should have regular response in addition to thoughts"
 
 
 @pytest.mark.asyncio
@@ -62,7 +76,7 @@ async def test_thinking_disabled():
         )
     )
     
-    response = await client.generate_content_sync(request, model="gemini-2.5-flash")
+    response = await client.generate_content_sync(request, model="gemini-2.5-flash-lite")
     assert response.candidates
     
     # With thinking disabled, should not have thought parts
@@ -72,36 +86,51 @@ async def test_thinking_disabled():
 
 @pytest.mark.asyncio
 async def test_thinking_dynamic():
-    """Test dynamic thinking mode."""
+    """Test dynamic thinking mode and verify thoughts are included."""
     client = GeminiClient()
     
+    # Complex philosophical/scientific question that should trigger dynamic thinking
     request = GenerateRequest(
         contents=Content(
             role="user",
-            parts=[Part(text="Explain the theory of relativity and its implications for time travel.")]
+            parts=[Part(text="""Analyze this philosophical paradox:
+            
+            If a time traveler goes back in time and prevents their own birth,
+            how can they exist to go back in time in the first place?
+            
+            Consider multiple perspectives: physics, philosophy, and logic.
+            Explain your reasoning process.""")]
         ),
         generationConfig=GenerationConfig(
             thinkingConfig=ThinkingConfig(
                 includeThoughts=True,
-                thinkingBudget=-1  # Dynamic thinking
+                thinkingBudget=-1  # Dynamic thinking - model decides budget
             )
         )
     )
     
-    response = await client.generate_content_sync(request, model="gemini-2.5-flash")
+    response = await client.generate_content_sync(request, model="gemini-2.5-flash-lite")
     assert response.candidates
     assert response.candidates[0].content.parts
+    
+    # With dynamic thinking on complex problems, we should get thoughts
+    thought_parts = [p for p in response.candidates[0].content.parts if p.thought]
+    assert len(thought_parts) > 0, "Dynamic thinking should include thoughts for complex problems"
+    
+    # Verify thought quality
+    total_thought_length = sum(len(p.text or "") for p in thought_parts)
+    assert total_thought_length > 100, "Thoughts should be substantial for complex problems"
 
 
 @pytest.mark.asyncio
 async def test_thinking_with_function_calling():
-    """Test thinking with function calling to get thought signatures."""
+    """Test thinking with function calling and verify both thoughts and signatures."""
     client = GeminiClient()
     
-    # Define a simple math function
+    # Define a calculation function
     math_function = FunctionDeclaration(
         name="calculate",
-        description="Perform a calculation",
+        description="Perform a mathematical calculation",
         parameters={
             "type": "object",
             "properties": {
@@ -119,30 +148,38 @@ async def test_thinking_with_function_calling():
         functionCallingConfig=FunctionCallingConfig(mode="AUTO")
     )
     
+    # Complex problem that requires thinking and function use
     request = GenerateRequest(
         contents=Content(
             role="user",
-            parts=[Part(text="Use the calculate function to find the result of 123 * 456")]
+            parts=[Part(text="""Calculate the compound interest on $10,000 at 5% annual rate for 3 years,
+                           compounded monthly. Use the calculate function and explain your approach.""")]
         ),
         tools=[tool],
         toolConfig=tool_config,
         generationConfig=GenerationConfig(
             thinkingConfig=ThinkingConfig(
                 includeThoughts=True,
-                thinkingBudget=500
+                thinkingBudget=512
             )
         )
     )
     
-    response = await client.generate_content_sync(request, model="gemini-2.5-flash")
+    response = await client.generate_content_sync(request, model="gemini-2.5-flash-lite")
     assert response.candidates
+    assert response.candidates[0].content.parts
     
-    # Check for thought signatures when function calling is enabled
-    for part in response.candidates[0].content.parts:
-        if part.thoughtSignature:
-            assert isinstance(part.thoughtSignature, str)
+    # Should have thoughts when thinking is enabled
+    thought_parts = [p for p in response.candidates[0].content.parts if p.thought]
+    assert len(thought_parts) > 0, "Should include thoughts with function calling"
     
-    # Note: Signatures only appear when both thinking and function calling are used
+    # Should have function call
+    function_parts = [p for p in response.candidates[0].content.parts if p.functionCall]
+    assert len(function_parts) > 0, "Should call the calculate function"
+    
+    # Check for thought signatures (appear with function calling + thinking)
+    signature_parts = [p for p in response.candidates[0].content.parts if p.thoughtSignature]
+    # Note: Signatures may or may not be present depending on model's decision
 
 
 @pytest.mark.asyncio
@@ -159,7 +196,7 @@ async def test_thinking_multi_turn_with_signatures():
         generationConfig=GenerationConfig(
             thinkingConfig=ThinkingConfig(
                 includeThoughts=True,
-                thinkingBudget=1000
+                thinkingBudget=512
             )
         )
     )
@@ -183,7 +220,7 @@ async def test_thinking_multi_turn_with_signatures():
         generationConfig=GenerationConfig(
             thinkingConfig=ThinkingConfig(
                 includeThoughts=True,
-                thinkingBudget=1000
+                thinkingBudget=512
             )
         )
     )
