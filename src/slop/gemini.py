@@ -91,15 +91,44 @@ class CodeExecutionResult(BaseModel):
     output: Optional[str] = None
 
 
+class ThinkingConfig(BaseModel):
+    """Configuration for model thinking/reasoning.
+    
+    Thinking allows models to process complex requests with internal reasoning.
+    - includeThoughts: If true, thought summaries are returned when available
+    - thinkingBudget: Number of thought tokens to generate
+      * 0: Disable thinking
+      * -1: Dynamic thinking (model decides based on complexity)
+      * >0: Fixed budget of tokens
+    """
+    includeThoughts: Optional[bool] = Field(
+        default=None,
+        description="Include thought summaries in response when available"
+    )
+    thinkingBudget: Optional[int] = Field(
+        default=None,
+        description="Thought token budget: 0=disabled, -1=dynamic, >0=fixed"
+    )
+
+
 class Part(BaseModel):
     text: Optional[str] = None
     inlineData: Optional[Blob] = None
     functionCall: Optional[FunctionCall] = None
     functionResponse: Optional[FunctionResponse] = None
-
     fileData: Optional[FileData] = None
     executableCode: Optional[ExecutableCode] = None
     codeExecutionResult: Optional[CodeExecutionResult] = None
+    
+    # Thinking-related fields (Gemini 2.5+)
+    thought: Optional[bool] = Field(
+        default=None,
+        description="Indicates if this part is a thought from the model"
+    )
+    thoughtSignature: Optional[str] = Field(
+        default=None, 
+        description="Opaque signature for thought context in multi-turn conversations"
+    )
 
 
 class Content(BaseModel):
@@ -120,6 +149,10 @@ class GenerationConfig(BaseModel):
     responseLogprobs: Optional[bool] = None
     logprobs: Optional[int] = None
     enableEnhancedCivicAnswers: Optional[bool] = None
+    thinkingConfig: Optional[ThinkingConfig] = Field(
+        default=None,
+        description="Configuration for model thinking/reasoning (Gemini 2.5+)"
+    )
 
 
 class GenerateRequest(BaseModel):
