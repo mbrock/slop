@@ -104,7 +104,7 @@ class Part(BaseModel):
 
 class Content(BaseModel):
     role: str
-    parts: List[Part]
+    parts: List[Part] = Field(default_factory=list)
 
 
 class GenerationConfig(BaseModel):
@@ -480,7 +480,7 @@ class GeminiClient:
         Returns:
             FileList object containing the list of files and next page token
         """
-        url = f"{self.base_url}/files"
+        url = f"{self.base_url}/v1beta/files"
         params = {"key": self.api_key}
         if page_size:
             params["pageSize"] = page_size
