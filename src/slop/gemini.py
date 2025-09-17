@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 from enum import Enum
@@ -5,19 +6,13 @@ from pathlib import Path
 from typing import (
     Any,
     AsyncIterator,
-    Dict,
-    List,
     Literal,
-    Optional,
-    Type,
-    Union,
 )
 
 import httpx
 import rich
 from httpx_sse import ServerSentEvent, aconnect_sse
 from pydantic import BaseModel, Field
-import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +25,7 @@ class FunctionParameter(BaseModel):
 class FunctionDeclaration(BaseModel):
     name: str
     description: str
-    parameters: Dict[str, Any] = Field(
+    parameters: dict[str, Any] = Field(
         default_factory=dict,
         description="JSON Schema object with type, properties, and required fields",
     )
@@ -38,15 +33,15 @@ class FunctionDeclaration(BaseModel):
 
 class FunctionCallingConfig(BaseModel):
     mode: Literal["ANY", "AUTO", "NONE"]
-    allowedFunctionNames: Optional[List[str]] = None
+    allowedFunctionNames: list[str] | None = None
 
 
 class ToolConfig(BaseModel):
-    functionCallingConfig: Optional[FunctionCallingConfig] = None
+    functionCallingConfig: FunctionCallingConfig | None = None
 
 
 class Tool(BaseModel):
-    functionDeclarations: List[FunctionDeclaration]
+    functionDeclarations: list[FunctionDeclaration]
 
 
 class Blob(BaseModel):
@@ -56,17 +51,17 @@ class Blob(BaseModel):
 
 class FunctionCall(BaseModel):
     name: str
-    args: Dict[str, Any]
+    args: dict[str, Any]
 
 
 class FunctionResponse(BaseModel):
     name: str
-    response: Dict[str, Any]
+    response: dict[str, Any]
 
 
 class FileData(BaseModel):
     fileUri: str
-    mimeType: Optional[str] = None
+    mimeType: str | None = None
 
 
 class Language(str, Enum):
@@ -88,12 +83,12 @@ class Outcome(str, Enum):
 
 class CodeExecutionResult(BaseModel):
     outcome: Outcome
-    output: Optional[str] = None
+    output: str | None = None
 
 
 class ThinkingConfig(BaseModel):
     """Configuration for model thinking/reasoning.
-    
+
     Thinking allows models to process complex requests with internal reasoning.
     - includeThoughts: If true, thought summaries are returned when available
     - thinkingBudget: Number of thought tokens to generate
@@ -101,65 +96,62 @@ class ThinkingConfig(BaseModel):
       * -1: Dynamic thinking (model decides based on complexity)
       * >0: Fixed budget of tokens
     """
-    includeThoughts: Optional[bool] = Field(
-        default=None,
-        description="Include thought summaries in response when available"
+
+    includeThoughts: bool | None = Field(
+        default=None, description="Include thought summaries in response when available"
     )
-    thinkingBudget: Optional[int] = Field(
+    thinkingBudget: int | None = Field(
         default=None,
-        description="Thought token budget: 0=disabled, -1=dynamic, >0=fixed"
+        description="Thought token budget: 0=disabled, -1=dynamic, >0=fixed",
     )
 
 
 class Part(BaseModel):
-    text: Optional[str] = None
-    inlineData: Optional[Blob] = None
-    functionCall: Optional[FunctionCall] = None
-    functionResponse: Optional[FunctionResponse] = None
-    fileData: Optional[FileData] = None
-    executableCode: Optional[ExecutableCode] = None
-    codeExecutionResult: Optional[CodeExecutionResult] = None
-    
-    # Thinking-related fields (Gemini 2.5+)
-    thought: Optional[bool] = Field(
-        default=None,
-        description="Indicates if this part is a thought from the model"
+    text: str | None = None
+    inlineData: Blob | None = None
+    functionCall: FunctionCall | None = None
+    functionResponse: FunctionResponse | None = None
+    fileData: FileData | None = None
+    executableCode: ExecutableCode | None = None
+    codeExecutionResult: CodeExecutionResult | None = None
+    thought: bool | None = Field(
+        default=None, description="Indicates if this part is a thought from the model"
     )
-    thoughtSignature: Optional[str] = Field(
-        default=None, 
-        description="Opaque signature for thought context in multi-turn conversations"
+    thoughtSignature: str | None = Field(
+        default=None,
+        description="Opaque signature for thought context in multi-turn conversations",
     )
 
 
 class Content(BaseModel):
     role: str
-    parts: List[Part] = Field(default_factory=list)
+    parts: list[Part] = Field(default_factory=list)
 
 
 class GenerationConfig(BaseModel):
-    stopSequences: Optional[List[str]] = None
-    responseMimeType: Optional[str] = None
-    candidateCount: Optional[int] = Field(default=1, ge=1, le=1)
-    maxOutputTokens: Optional[int] = None
-    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
-    topP: Optional[float] = None
-    topK: Optional[int] = None
-    presencePenalty: Optional[float] = None
-    frequencyPenalty: Optional[float] = None
-    responseLogprobs: Optional[bool] = None
-    logprobs: Optional[int] = None
-    enableEnhancedCivicAnswers: Optional[bool] = None
-    thinkingConfig: Optional[ThinkingConfig] = Field(
+    stopSequences: list[str] | None = None
+    responseMimeType: str | None = None
+    candidateCount: int | None = Field(default=1, ge=1, le=1)
+    maxOutputTokens: int | None = None
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    topP: float | None = None
+    topK: int | None = None
+    presencePenalty: float | None = None
+    frequencyPenalty: float | None = None
+    responseLogprobs: bool | None = None
+    logprobs: int | None = None
+    enableEnhancedCivicAnswers: bool | None = None
+    thinkingConfig: ThinkingConfig | None = Field(
         default=None,
-        description="Configuration for model thinking/reasoning (Gemini 2.5+)"
+        description="Configuration for model thinking/reasoning (Gemini 2.5+)",
     )
 
 
 class GenerateRequest(BaseModel):
-    contents: Union[Content, List[Content]]
-    tools: Optional[List[Tool]] = None
-    toolConfig: Optional[ToolConfig] = None
-    generationConfig: Optional[GenerationConfig] = None
+    contents: Content | list[Content]
+    tools: list[Tool] | None = None
+    toolConfig: ToolConfig | None = None
+    generationConfig: GenerationConfig | None = None
 
 
 class MovieSearchParams(BaseModel):
@@ -168,14 +160,12 @@ class MovieSearchParams(BaseModel):
     location: str = Field(description="The city and state, e.g. San Francisco, CA")
     description: str = Field(..., description="Movie description or genre")
 
-    class Config:
-        @staticmethod
-        def json_schema_extra(
-            schema: Dict[str, Any], model: Type["MovieSearchParams"]
-        ) -> None:
-            schema.pop("title", None)
-            for prop in schema.get("properties", {}).values():
-                prop.pop("title", None)
+    model_config = {
+        "json_schema_extra": lambda schema, model: (
+            schema.pop("title", None),
+            [prop.pop("title", None) for prop in schema.get("properties", {}).values()],
+        )[-1]
+    }
 
 
 class HarmCategory(str, Enum):
@@ -231,8 +221,8 @@ class FinishReason(str, Enum):
 
 class UsageMetadata(BaseModel):
     promptTokenCount: int
-    cachedContentTokenCount: Optional[int] = None
-    candidatesTokenCount: Optional[int] = None
+    cachedContentTokenCount: int | None = None
+    candidatesTokenCount: int | None = None
     totalTokenCount: int
 
 
@@ -245,23 +235,23 @@ class BlockReason(str, Enum):
 
 
 class PromptFeedback(BaseModel):
-    blockReason: Optional[BlockReason] = None
-    safetyRatings: Optional[List[SafetyRating]] = None
+    blockReason: BlockReason | None = None
+    safetyRatings: list[SafetyRating] | None = None
 
 
 class Candidate(BaseModel):
     content: Content
-    finishReason: Optional[FinishReason] = None
-    safetyRatings: List[SafetyRating] = []
-    tokenCount: Optional[int] = None
-    index: Optional[int] = None
+    finishReason: FinishReason | None = None
+    safetyRatings: list[SafetyRating] = []
+    tokenCount: int | None = None
+    index: int | None = None
 
 
 class GenerateContentResponse(BaseModel):
-    candidates: List[Candidate]
-    promptFeedback: Optional[PromptFeedback] = None
-    usageMetadata: Optional[UsageMetadata] = None
-    modelVersion: Optional[str] = None
+    candidates: list[Candidate]
+    promptFeedback: PromptFeedback | None = None
+    usageMetadata: UsageMetadata | None = None
+    modelVersion: str | None = None
 
 
 class FileState(str, Enum):
@@ -274,7 +264,7 @@ class FileState(str, Enum):
 class Status(BaseModel):
     code: int
     message: str
-    details: List[Dict[str, Any]] = Field(default_factory=list)
+    details: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class VideoMetadata(BaseModel):
@@ -283,22 +273,22 @@ class VideoMetadata(BaseModel):
 
 class File(BaseModel):
     name: str
-    displayName: Optional[str] = None
-    mimeType: Optional[str] = None
-    sizeBytes: Optional[str] = None
-    createTime: Optional[str] = None
-    updateTime: Optional[str] = None
-    expirationTime: Optional[str] = None
-    sha256Hash: Optional[str] = None
+    displayName: str | None = None
+    mimeType: str | None = None
+    sizeBytes: str | None = None
+    createTime: str | None = None
+    updateTime: str | None = None
+    expirationTime: str | None = None
+    sha256Hash: str | None = None
     uri: str
-    state: Optional[FileState] = None
-    error: Optional[Status] = None
-    videoMetadata: Optional[VideoMetadata] = None
+    state: FileState | None = None
+    error: Status | None = None
+    videoMetadata: VideoMetadata | None = None
 
 
 class FileList(BaseModel):
-    files: List[File]
-    nextPageToken: Optional[str] = None
+    files: list[File]
+    nextPageToken: str | None = None
 
 
 class GeminiError(Exception):
@@ -324,40 +314,58 @@ class ModelOverloadedError(GeminiError):
 
 
 class GeminiClient:
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+    ):
         self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
         if not self.api_key:
             raise ValueError(
                 "API key must be provided or set in GOOGLE_API_KEY environment variable"
             )
+        self.model = model or os.getenv("GEMINI_MODEL")
+        if not self.model:
+            raise ValueError(
+                "Model must be provided or set in GEMINI_MODEL environment variable"
+            )
         self.base_url = "https://generativelanguage.googleapis.com"
+        self.client = httpx.AsyncClient()
+    
+    async def __aenter__(self):
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.client.aclose()
+    
+    async def close(self):
+        """Close the underlying HTTP client."""
+        await self.client.aclose()
 
     async def generate_content(
         self,
         request: GenerateRequest,
-        model: str = "gemini-2.0-flash-exp",
     ) -> AsyncIterator[GenerateContentResponse]:
-        url = f"{self.base_url}/v1beta/models/{model}:streamGenerateContent"
+        url = f"{self.base_url}/v1beta/models/{self.model}:streamGenerateContent"
 
-        async with httpx.AsyncClient() as client:
-            json = request.model_dump(exclude_none=True)
-            import rich
+        json = request.model_dump(exclude_none=True)
+        import rich
 
-            async with aconnect_sse(
-                client,
-                "POST",
-                url,
-                params={"key": self.api_key, "alt": "sse"},
-                json=json,
-            ) as sse:
-                async for event in sse.aiter_sse():
-                    match event:
-                        case ServerSentEvent(event="message", data=json):
-                            yield GenerateContentResponse.model_validate_json(json)
-                        case _:
-                            rich.print(event)
+        async with aconnect_sse(
+            self.client,
+            "POST",
+            url,
+            params={"key": self.api_key, "alt": "sse"},
+            json=json,
+        ) as sse:
+            async for event in sse.aiter_sse():
+                match event:
+                    case ServerSentEvent(event="message", data=json):
+                        yield GenerateContentResponse.model_validate_json(json)
+                    case _:
+                        rich.print(event)
 
-    async def get_file_metadata(self, file_name: str) -> Optional[File]:
+    async def get_file_metadata(self, file_name: str) -> File | None:
         """Get metadata for a specific file.
 
         Args:
@@ -367,12 +375,11 @@ class GeminiClient:
             File object containing metadata about the file, or None if not found
         """
         url = f"{self.base_url}/v1beta/{file_name}"
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, params={"key": self.api_key})
-            if response.status_code == 404 or response.status_code == 403:
-                return None
-            response.raise_for_status()
-            return File.model_validate(response.json())
+        response = await self.client.get(url, params={"key": self.api_key})
+        if response.status_code == 404 or response.status_code == 403:
+            return None
+        response.raise_for_status()
+        return File.model_validate(response.json())
 
     def _generate_content_addressed_name(self, data: bytes, mime_type: str) -> str:
         """Generate a content-addressed file name based on data hash."""
@@ -385,7 +392,7 @@ class GeminiClient:
         self,
         data: bytes,
         mime_type: str,
-        display_name: Optional[str] = None,
+        display_name: str | None = None,
     ) -> File:
         """Upload bytes data to the Gemini API.
 
@@ -412,55 +419,54 @@ class GeminiClient:
 
         # Initial resumable upload request
         url = f"{self.base_url}/upload/v1beta/files"
-        async with httpx.AsyncClient() as client:
-            # Start the upload
-            headers = {
-                "X-Goog-Upload-Protocol": "resumable",
-                "X-Goog-Upload-Command": "start",
-                "X-Goog-Upload-Header-Content-Length": str(file_size),
-                "X-Goog-Upload-Header-Content-Type": mime_type,
-                "Content-Type": "application/json",
+        # Start the upload
+        headers = {
+            "X-Goog-Upload-Protocol": "resumable",
+            "X-Goog-Upload-Command": "start",
+            "X-Goog-Upload-Header-Content-Length": str(file_size),
+            "X-Goog-Upload-Header-Content-Type": mime_type,
+            "Content-Type": "application/json",
+        }
+        metadata = {
+            "file": {
+                "name": file_name,
+                **({"display_name": display_name} if display_name else {}),
             }
-            metadata = {
-                "file": {
-                    "name": file_name,
-                    **({"display_name": display_name} if display_name else {}),
-                }
-            }
-            logger.info(f"Uploading file: {metadata}")
-            response = await client.post(
-                url,
-                params={"key": self.api_key},
-                headers=headers,
-                json=metadata,
-                timeout=60 * 5,
-            )
-            response.raise_for_status()
+        }
+        logger.info(f"Uploading file: {metadata}")
+        response = await self.client.post(
+            url,
+            params={"key": self.api_key},
+            headers=headers,
+            json=metadata,
+            timeout=60 * 5,
+        )
+        response.raise_for_status()
 
-            # Get upload URL from response headers
-            upload_url = response.headers.get("x-goog-upload-url")
-            if not upload_url:
-                raise ValueError("No upload URL received from server")
+        # Get upload URL from response headers
+        upload_url = response.headers.get("x-goog-upload-url")
+        if not upload_url:
+            raise ValueError("No upload URL received from server")
 
-            # Upload the data
-            headers = {
-                "Content-Length": str(file_size),
-                "X-Goog-Upload-Offset": "0",
-                "X-Goog-Upload-Command": "upload, finalize",
-            }
-            response = await client.post(
-                upload_url,
-                headers=headers,
-                content=data,
-                timeout=60 * 5,
-            )
-            response.raise_for_status()
-            return File.model_validate(response.json()["file"])
+        # Upload the data
+        headers = {
+            "Content-Length": str(file_size),
+            "X-Goog-Upload-Offset": "0",
+            "X-Goog-Upload-Command": "upload, finalize",
+        }
+        response = await self.client.post(
+            upload_url,
+            headers=headers,
+            content=data,
+            timeout=60 * 5,
+        )
+        response.raise_for_status()
+        return File.model_validate(response.json()["file"])
 
     async def upload_file(
         self,
-        file_path: Union[str, Path],
-        display_name: Optional[str] = None,
+        file_path: str | Path,
+        display_name: str | None = None,
     ) -> File:
         """Upload a file to the Gemini API.
 
@@ -494,15 +500,14 @@ class GeminiClient:
             File object containing metadata about the file
         """
         url = f"{self.base_url}/{file_name}"
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, params={"key": self.api_key})
-            response.raise_for_status()
-            return File.model_validate(response.json())
+        response = await self.client.get(url, params={"key": self.api_key})
+        response.raise_for_status()
+        return File.model_validate(response.json())
 
     async def list_files(
         self,
-        page_size: Optional[int] = None,
-        page_token: Optional[str] = None,
+        page_size: int | None = None,
+        page_token: str | None = None,
     ) -> FileList:
         """List all files owned by the requesting project.
 
@@ -520,10 +525,9 @@ class GeminiClient:
         if page_token:
             params["pageToken"] = page_token
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            return FileList.model_validate(response.json())
+        response = await self.client.get(url, params=params)
+        response.raise_for_status()
+        return FileList.model_validate(response.json())
 
     async def delete_file(self, file_name: str) -> None:
         """Delete a file.
@@ -532,97 +536,83 @@ class GeminiClient:
             file_name: The name of the file to delete (e.g. 'files/abc-123')
         """
         url = f"{self.base_url}/v1beta/{file_name}"
-        async with httpx.AsyncClient() as client:
-            response = await client.delete(url, params={"key": self.api_key})
-            response.raise_for_status()
+        response = await self.client.delete(url, params={"key": self.api_key})
+        response.raise_for_status()
 
     async def generate_content_sync(
         self,
         request: GenerateRequest,
-        model: str = "gemini-2.0-flash-exp",
     ) -> GenerateContentResponse:
         """Non-streaming version of generate_content"""
-        url = f"{self.base_url}/v1beta/models/{model}:generateContent"
-        async with httpx.AsyncClient() as client:
-            rich.print(request.model_dump(exclude_none=True))
-            try:
-                response = await client.post(
-                    url,
-                    params={"key": self.api_key},
-                    json=request.model_dump(exclude_none=True),
-                    headers={"Content-Type": "application/json"},
-                    timeout=60 * 5,
+        url = f"{self.base_url}/v1beta/models/{self.model}:generateContent"
+        rich.print(request.model_dump(exclude_none=True))
+        response = await self.client.post(
+            url,
+            params={"key": self.api_key},
+            json=request.model_dump(exclude_none=True),
+            headers={"Content-Type": "application/json"},
+            timeout=60 * 5,
+        )
+        if response.is_error:
+            error_data = response.json()
+            rich.print(error_data)
+
+            error_status = error_data.get("error", {}).get("status")
+            error_message = error_data.get("error", {}).get(
+                "message", "Unknown error occurred"
+            )
+
+            if error_status == "UNAVAILABLE":
+                raise ModelOverloadedError(self.model)
+            elif error_status == "INTERNAL":
+                raise GeminiError(
+                    "Internal server error occurred. Please try again.",
+                    error_data,
                 )
-                if response.is_error:
-                    error_data = response.json()
-                    rich.print(error_data)
+            elif error_status == "INVALID_ARGUMENT":
+                raise GeminiError(
+                    f"Invalid request: {error_message}", error_data
+                )
+            else:
+                raise GeminiError(f"API error: {error_message}", error_data)
 
-                    error_status = error_data.get("error", {}).get("status")
-                    error_message = error_data.get("error", {}).get(
-                        "message", "Unknown error occurred"
-                    )
+        response.raise_for_status()
 
-                    if error_status == "UNAVAILABLE":
-                        raise ModelOverloadedError(model)
-                    elif error_status == "INTERNAL":
-                        raise GeminiError(
-                            "Internal server error occurred. Please try again.",
-                            error_data,
-                        )
-                    elif error_status == "INVALID_ARGUMENT":
-                        raise GeminiError(
-                            f"Invalid request: {error_message}", error_data
-                        )
-                    else:
-                        raise GeminiError(f"API error: {error_message}", error_data)
-
-                response.raise_for_status()
-
-                return GenerateContentResponse.model_validate(response.json())
-            except httpx.TimeoutException:
-                raise GeminiError("Request timed out. Please try again.")
-            except httpx.HTTPError as e:
-                rich.print(f"HTTP error occurred: {e}")
-                raise GeminiError(f"HTTP error: {str(e)}")
-            except Exception as e:
-                rich.print(f"Unexpected error: {e}")
-                rich.print(response.text)
-                raise GeminiError(f"Unexpected error: {str(e)}")
+        return GenerateContentResponse.model_validate(response.json())
 
 
 # Example usage:
 async def main():
-    client = GeminiClient()
+    async with GeminiClient(model="gemini-2.5-flash") as client:
+        # Upload the audio file
+        file = await client.upload_file(
+            "media/interview.ogg", display_name="Interview Audio"
+        )
+        print(f"Uploaded file: {file.name}")
 
-    # Upload the audio file
-    file = await client.upload_file(
-        "media/interview.ogg", display_name="Interview Audio"
-    )
-    print(f"Uploaded file: {file.name}")
+        # Request transcription
+        request = GenerateRequest(
+            contents=[
+                Content(
+                    role="user",
+                    parts=[
+                        Part(
+                            text="""Please transcribe this audio file. Use HTML with elements like <span data-speaker="S1 | S2 | ..." data-time="hh:mm:ss"> for each utterance. Use dashes (—), ellipses (…), and light editing for an accurate transcript with typographic care. Write disfluencies like "it's— well— you know—"."""
+                        ),
+                        Part(fileData=FileData(fileUri=file.uri)),
+                    ],
+                )
+            ],
+        )
 
-    # Request transcription
-    request = GenerateRequest(
-        contents=[
-            Content(
-                role="user",
-                parts=[
-                    Part(
-                        text="""Please transcribe this audio file. Use HTML with elements like <span data-speaker="S1 | S2 | ..." data-time="hh:mm:ss"> for each utterance. Use dashes (—), ellipses (…), and light editing for an accurate transcript with typographic care. Write disfluencies like "it's— well— you know—"."""
-                    ),
-                    Part(fileData=FileData(fileUri=file.uri)),
-                ],
-            )
-        ],
-    )
+        # Generate transcription
+        print("\nTranscription:")
+        async for response in client.generate_content(request):
+            print(response.candidates[0].content.parts[0].text, end="")
+        print()
 
-    # Generate transcription
-    print("\nTranscription:")
-    async for response in client.generate_content(request):
-        print(response.candidates[0].content.parts[0].text, end="")
-    print()
-
-    # Clean up
-    await client.delete_file(file.name)
+        # Clean up
+        await client.delete_file(file.name)
 
 
 if __name__ == "__main__":

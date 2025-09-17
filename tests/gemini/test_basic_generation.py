@@ -12,10 +12,8 @@ from src.slop.gemini import (
 
 
 @pytest.mark.asyncio
-async def test_basic_text_generation():
+async def test_basic_text_generation(gemini_client: GeminiClient):
     """Test basic text generation with a simple prompt."""
-    client = GeminiClient()
-
     request = GenerateRequest(
         contents=Content(
             role="user", parts=[Part(text="Write a haiku about Python programming.")]
@@ -23,9 +21,7 @@ async def test_basic_text_generation():
         generationConfig=GenerationConfig(temperature=0.7, maxOutputTokens=100),
     )
 
-    response = await client.generate_content_sync(
-        request, model="gemini-2.5-flash-lite"
-    )
+    response = await gemini_client.generate_content_sync(request)
     assert response.candidates
     assert len(response.candidates) > 0
 

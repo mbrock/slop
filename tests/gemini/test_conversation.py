@@ -6,10 +6,8 @@ from src.slop.gemini import Content, GeminiClient, GenerateRequest, Part
 
 
 @pytest.mark.asyncio
-async def test_multi_turn_conversation():
+async def test_multi_turn_conversation(gemini_client: GeminiClient):
     """Test multi-turn conversation."""
-    client = GeminiClient()
-
     # Build conversation history
     contents = [
         Content(role="user", parts=[Part(text="My name is Alice. Remember it.")]),
@@ -20,9 +18,7 @@ async def test_multi_turn_conversation():
     ]
 
     request = GenerateRequest(contents=contents)
-    response = await client.generate_content_sync(
-        request, model="gemini-2.5-flash-lite"
-    )
+    response = await gemini_client.generate_content_sync(request)
 
     assert response.candidates
     assert len(response.candidates) > 0

@@ -6,10 +6,8 @@ from src.slop.gemini import Content, GeminiClient, GenerateRequest, Part
 
 
 @pytest.mark.asyncio
-async def test_streaming_response():
+async def test_streaming_response(gemini_client):
     """Test streaming text generation."""
-    client = GeminiClient()
-
     request = GenerateRequest(
         contents=Content(role="user", parts=[Part(text="Count from 1 to 5.")])
     )
@@ -17,9 +15,7 @@ async def test_streaming_response():
     full_text = ""
     chunk_count = 0
 
-    async for response in client.generate_content(
-        request, model="gemini-2.5-flash-lite"
-    ):
+    async for response in gemini_client.generate_content(request):
         if response.candidates and response.candidates[0].content.parts:
             chunk = response.candidates[0].content.parts[0].text
             if chunk:

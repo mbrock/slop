@@ -16,9 +16,8 @@ from src.slop.gemini import (
 
 
 @pytest.mark.asyncio
-async def test_file_upload_and_processing():
+async def test_file_upload_and_processing(gemini_client):
     """Test file upload and processing."""
-    client = GeminiClient()
 
     # Create a temporary text file
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
@@ -29,7 +28,7 @@ async def test_file_upload_and_processing():
 
     try:
         # Upload the file
-        file = await client.upload_file(temp_path, display_name="Test File")
+        file = await gemini_client.upload_file(temp_path, display_name="Test File")
         assert file.name
         assert file.uri
         assert file.state == FileState.ACTIVE
@@ -45,13 +44,11 @@ async def test_file_upload_and_processing():
             )
         )
 
-        response = await client.generate_content_sync(
-            request, model="gemini-2.5-flash-lite"
-        )
+        response = await gemini_client.generate_content_sync(request)
         assert response.candidates
 
         # Clean up
-        await client.delete_file(file.name)
+        await gemini_client.delete_file(file.name)
 
     finally:
         # Clean up temp file

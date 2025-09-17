@@ -5,11 +5,9 @@ from src.slop.gemini import GeminiClient
 
 
 @pytest.mark.asyncio
-async def test_list_files():
+async def test_list_files(gemini_client):
     """Test listing files."""
-    client = GeminiClient()
-    
-    file_list = await client.list_files(page_size=5)
+    file_list = await gemini_client.list_files(page_size=5)
     
     # Should return a FileList object
     assert hasattr(file_list, 'files')

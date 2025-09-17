@@ -15,10 +15,8 @@ from src.slop.gemini import (
 
 
 @pytest.mark.asyncio
-async def test_function_calling():
+async def test_function_calling(gemini_client: GeminiClient):
     """Test function calling feature."""
-    client = GeminiClient()
-
     # Define a function for getting weather
     weather_function = FunctionDeclaration(
         name="get_weather",
@@ -51,9 +49,7 @@ async def test_function_calling():
         toolConfig=tool_config,
     )
 
-    response = await client.generate_content_sync(
-        request, model="gemini-2.5-flash-lite"
-    )
+    response = await gemini_client.generate_content_sync(request)
     assert response.candidates
 
     # Model can either call the function or respond with text

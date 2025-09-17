@@ -104,7 +104,7 @@ async def transcribe_audio_segment_v1(
                 tmp_path.unlink()
 
     # Upload segment to Gemini
-    client = GeminiClient()
+    client = GeminiClient(model=interview.model_name)
     if segment_audio is None:
         raise HTTPException(
             status_code=500,
@@ -180,7 +180,7 @@ Guidelines:
         contents=[Content(role="user", parts=parts)],
         generationConfig=GenerationConfig(temperature=0.1),
     )
-    response = await client.generate_content_sync(request, model=interview.model_name)
+    response = await client.generate_content_sync(request)
 
     if not response.candidates:
         raise HTTPException(status_code=500, detail="Failed to transcribe segment")
@@ -278,7 +278,7 @@ async def transcribe_audio_segment(
                 tmp_path.unlink()
 
     # Upload the current segment audio to Gemini.
-    client = GeminiClient()
+    client = GeminiClient(model=interview.model_name)
     if segment_audio is None:
         raise HTTPException(
             status_code=500,
@@ -376,7 +376,7 @@ async def transcribe_audio_segment(
         contents=conversation,
         generationConfig=GenerationConfig(temperature=0.1),
     )
-    response = await client.generate_content_sync(request, model=interview.model_name)
+    response = await client.generate_content_sync(request)
 
     if not response.candidates:
         raise HTTPException(status_code=500, detail="Failed to transcribe segment")
@@ -423,7 +423,7 @@ async def improve_speaker_identification_segment(
     Returns:
         List of utterances with improved speaker assignments
     """
-    client = GeminiClient()
+    client = GeminiClient(model=model_name)
     file = await client.upload_bytes(
         segment_audio,
         mime_type="audio/ogg",
@@ -505,7 +505,7 @@ Guidelines:
         contents=[Content(role="user", parts=parts)],
         generationConfig=GenerationConfig(temperature=0.1),
     )
-    response = await client.generate_content_sync(request, model=model_name)
+    response = await client.generate_content_sync(request)
     if not response.candidates:
         raise HTTPException(
             status_code=500, detail="Failed to improve speaker identification"
