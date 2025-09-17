@@ -1,12 +1,10 @@
 """Test streaming responses from Gemini API."""
 
-import pytest
+from src.slop import gemini
+from src.slop.gemini import Content, GenerateRequest, Part
 
-from src.slop.gemini import Content, GeminiClient, GenerateRequest, Part
 
-
-@pytest.mark.asyncio
-async def test_streaming_response(gemini_client):
+async def test_streaming_response():
     """Test streaming text generation."""
     request = GenerateRequest(
         contents=Content(role="user", parts=[Part(text="Count from 1 to 5.")])
@@ -15,7 +13,7 @@ async def test_streaming_response(gemini_client):
     full_text = ""
     chunk_count = 0
 
-    async for response in gemini_client.generate_content(request):
+    async for response in gemini.generate_content(request):
         if response.candidates and response.candidates[0].content.parts:
             chunk = response.candidates[0].content.parts[0].text
             if chunk:

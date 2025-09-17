@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import tempfile
 from contextlib import asynccontextmanager, contextmanager
@@ -7,6 +8,7 @@ from pathlib import Path
 from subprocess import PIPE
 
 import anyio
+import httpx
 from docx import Document
 from docx.shared import Pt
 from fastapi import FastAPI, Form, HTTPException, Request, Response, UploadFile
@@ -21,10 +23,8 @@ from tagflow import (
     text,
 )
 
-from slop.gemini import (
-    ModelOverloadedError,
-    GeminiError,
-)
+from slop import gemini
+from slop.gemini import GeminiError, ModelOverloadedError
 from slop.models import (
     BLOBS,
     INTERVIEWS,
@@ -43,15 +43,42 @@ logger = logging.getLogger("slop.transcribe")
 # Initialize Live instance for WebSocket support
 live = Live()
 
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL_CHOICES = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash-lite",
+]
+
+
+IMPROVE_SPEAKERS_ONCLICK = (
+    "const hint = prompt('Enter any hints about the speakers (optional):'); "
+    "if (hint === null) { return false; } "
+    "const selected = document.querySelector(\"#model-selector input[name='model_name']:checked\"); "
+    "const payload = { hint }; "
+    "if (selected) { payload.model_name = selected.value; } "
+    "this.setAttribute('hx-vals', JSON.stringify(payload)); "
+    "return true;"
+)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     FastAPI lifespan manager using the Live WebSocket support from TagFlow.
     """
-    async with live.run(app):
-        logger.info("Live server started")
-        yield
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError("GOOGLE_API_KEY environment variable must be set")
+
+    async with httpx.AsyncClient() as client:
+        with gemini.http_client.using(client):
+            with gemini.api_key.using(api_key):
+                with gemini.model.using(DEFAULT_GEMINI_MODEL):
+                    async with live.run(app):
+                        logger.info("Live server started")
+                        yield
+
     logger.info("Live server stopped")
 
 
@@ -523,7 +550,6 @@ def interview_header(title: str, interview_id: str):
     """Renders the interview header with title and action buttons."""
     interview = INTERVIEWS.get(interview_id)
     context_segments_value = str(interview.context_segments) if interview else "0"
-    model_name_value = interview.model_name if interview else ""
 
     with tag.div():
         breadcrumb({"Ieva's Interviews": "/", title: "#"})
@@ -561,30 +587,20 @@ def interview_header(title: str, interview_id: str):
 
                 # Model selector
                 with tag.form(
-                    action=f"/interview/{interview_id}/model",
-                    method="post",
+                    id="model-selector",
                     classes="flex items-center gap-2",
                 ):
                     with tag.label(classes="text-sm text-gray-600"):
                         text("Model:")
                     with tag.div(classes="flex gap-2"):
-                        for model in [
-                            "gemini-2.5-flash",
-                            "gemini-2.5-pro",
-                            "gemini-2.5-flash-lite",
-                        ]:
+                        for model in MODEL_CHOICES:
                             with tag.label(classes="flex items-center gap-1"):
                                 with tag.input(
                                     type="radio",
                                     name="model_name",
                                     value=model,
-                                    checked=model_name_value == model,
+                                    checked=(model == gemini.model.get()),
                                     classes="text-blue-600",
-                                    **{
-                                        "hx-post": f"/interview/{interview_id}/model",
-                                        "hx-trigger": "change",
-                                        "hx-swap": "none",
-                                    },
                                 ):
                                     pass
                                 with tag.span(classes="text-sm text-gray-600"):
@@ -637,6 +653,7 @@ async def view_segment(interview_id: str, segment_index: int):
                     "hx-post": f"/interview/{interview_id}/segment/{segment_index}/retranscribe",
                     "hx-target": f"#segment-{segment_index}",
                     "hx-swap": "outerHTML",
+                    "hx-include": "#model-selector",
                 },
             )
 
@@ -647,7 +664,7 @@ async def view_segment(interview_id: str, segment_index: int):
                     "hx-post": f"/interview/{interview_id}/segment/{segment_index}/improve-speakers",
                     "hx-target": f"#segment-{segment_index}",
                     "hx-swap": "outerHTML",
-                    "onclick": "const hint = prompt('Enter any hints about the speakers (optional):'); if (hint !== null) { this.setAttribute('hx-vals', JSON.stringify({hint})); return true; } return false;",
+                    "onclick": IMPROVE_SPEAKERS_ONCLICK,
                 },
             )
 
@@ -790,6 +807,7 @@ async def view_interview(interview_id: str):
                             "hx-post": f"/interview/{interview_id}/transcribe-next",
                             "hx-target": "#segments",
                             "hx-swap": "beforeend",
+                            "hx-include": "#model-selector",
                         },
                     )
 
@@ -845,7 +863,9 @@ async def get_audio(hash_: str, request: Request):
 
 
 @app.post("/interview/{interview_id}/transcribe-next")
-async def transcribe_next_segment(interview_id: str):
+async def transcribe_next_segment(
+    interview_id: str,
+):
     """
     Transcribe the next audio segment (2 minutes) for the given interview.
     Returns just the new segment as a partial view.
@@ -891,35 +911,20 @@ async def transcribe_next_segment(interview_id: str):
         return await view_segment(interview_id, len(interview.segments) - 1)
 
     except ModelOverloadedError as e:
-        # Return a modal dialog offering to switch models
         with tag.div(
-            classes="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center",
-            id="model-overload-dialog",
+            classes="fixed bottom-4 right-4 bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded shadow-lg",
+            role="alert",
+            **{
+                "hx-swap-oob": "true",
+                "_": "on load wait 5s then remove me",
+            },
         ):
-            with tag.div(classes="bg-white p-4 rounded-lg shadow-lg max-w-md"):
-                with tag.p(classes="mb-4"):
-                    text(
-                        f"The model {e.current_model} is overloaded. Would you like to try using {e.alternative_model}?"
-                    )
-                with tag.div(classes="flex justify-end gap-2"):
-                    with tag.button(
-                        classes="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700",
-                        **{
-                            "hx-post": f"/interview/{interview_id}/switch-model/{e.alternative_model}",
-                            "hx-target": "#model-overload-dialog",
-                            "hx-swap": "outerHTML",
-                        },
-                    ):
-                        text("Yes, try alternative model")
-                    with tag.button(
-                        classes="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50",
-                        **{
-                            "hx-post": f"/interview/{interview_id}/retry-transcription",
-                            "hx-target": "#model-overload-dialog",
-                            "hx-swap": "outerHTML",
-                        },
-                    ):
-                        text("No, retry current model")
+            with tag.p(classes="font-bold"):
+                text("Model overloaded")
+            with tag.p():
+                text(
+                    f"{gemini.model.get()} is busy. Try switching to {e.alternative_model} and retry."
+                )
 
     except GeminiError as e:
         # Show error toast notification
@@ -938,7 +943,10 @@ async def transcribe_next_segment(interview_id: str):
 
 
 @app.post("/interview/{interview_id}/segment/{segment_index}/retranscribe")
-async def retranscribe_segment(interview_id: str, segment_index: int):
+async def retranscribe_segment(
+    interview_id: str,
+    segment_index: int,
+):
     """Retranscribe a specific segment using Gemini."""
     if not (interview := INTERVIEWS.get(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
@@ -973,7 +981,9 @@ async def retranscribe_segment(interview_id: str, segment_index: int):
 
 @app.post("/interview/{interview_id}/segment/{segment_index}/improve-speakers")
 async def improve_speaker_identification(
-    interview_id: str, segment_index: int, hint: str | None = Form(None)
+    interview_id: str,
+    segment_index: int,
+    hint: str | None = Form(None),
 ):
     """Improve speaker identification for a specific segment using Gemini."""
     if not (interview := INTERVIEWS.get(interview_id)):
@@ -1006,7 +1016,6 @@ async def improve_speaker_identification(
         segment.utterances,
         context_segments,
         hint,
-        model_name=interview.model_name,
     )
 
     # Update the segment
@@ -1182,18 +1191,6 @@ async def update_context_segments(interview_id: str, context_segments: int = For
     interview.context_segments = max(
         0, min(5, context_segments)
     )  # Clamp between 0 and 5
-    INTERVIEWS.put(interview_id, interview)
-
-    return Response(status_code=204)  # No content response
-
-
-@app.post("/interview/{interview_id}/model")
-async def update_model(interview_id: str, model_name: str = Form(...)):
-    """Updates the model to use for transcription."""
-    if not (interview := INTERVIEWS.get(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
-
-    interview.model_name = model_name
     INTERVIEWS.put(interview_id, interview)
 
     return Response(status_code=204)  # No content response

@@ -2,11 +2,11 @@
 
 import pytest
 
+from src.slop import gemini
 from src.slop.gemini import (
     Content,
     FunctionCallingConfig,
     FunctionDeclaration,
-    GeminiClient,
     GenerateRequest,
     GenerationConfig,
     Part,
@@ -16,8 +16,7 @@ from src.slop.gemini import (
 )
 
 
-@pytest.mark.asyncio
-async def test_thinking_basic(gemini_client: GeminiClient):
+async def test_thinking_basic():
     """Test basic thinking configuration and verify thoughts are included."""
 
     # Use a complex problem that should trigger thinking
@@ -44,7 +43,7 @@ async def test_thinking_basic(gemini_client: GeminiClient):
         ),
     )
 
-    response = await gemini_client.generate_content_sync(request)
+    response = await gemini.generate_content_sync(request)
     assert response.candidates
     assert response.candidates[0].content.parts
 
@@ -66,8 +65,7 @@ async def test_thinking_basic(gemini_client: GeminiClient):
     )
 
 
-@pytest.mark.asyncio
-async def test_thinking_disabled(gemini_client: GeminiClient):
+async def test_thinking_disabled():
     """Test with thinking disabled."""
 
     request = GenerateRequest(
@@ -80,16 +78,15 @@ async def test_thinking_disabled(gemini_client: GeminiClient):
         ),
     )
 
-    response = await gemini_client.generate_content_sync(request)
+    response = await gemini.generate_content_sync(request)
     assert response.candidates
 
     for part in response.candidates[0].content.parts:
         assert part.thought is None or part.thought is False
 
 
-@pytest.mark.asyncio
 @pytest.mark.slow
-async def test_thinking_dynamic(gemini_client: GeminiClient):
+async def test_thinking_dynamic():
     """Test dynamic thinking mode and verify thoughts are included."""
 
     request = GenerateRequest(
@@ -109,7 +106,7 @@ async def test_thinking_dynamic(gemini_client: GeminiClient):
         ),
     )
 
-    response = await gemini_client.generate_content_sync(request)
+    response = await gemini.generate_content_sync(request)
     assert response.candidates
     assert response.candidates[0].content.parts
 
@@ -117,8 +114,7 @@ async def test_thinking_dynamic(gemini_client: GeminiClient):
     assert len(thought_parts) > 0, "Dynamic thinking should include thoughts"
 
 
-@pytest.mark.asyncio
-async def test_thinking_with_function_calling(gemini_client: GeminiClient):
+async def test_thinking_with_function_calling():
     """Test thinking with function calling and verify both thoughts and signatures."""
 
     # Define a calculation function
@@ -157,7 +153,7 @@ async def test_thinking_with_function_calling(gemini_client: GeminiClient):
         ),
     )
 
-    response = await gemini_client.generate_content_sync(request)
+    response = await gemini.generate_content_sync(request)
     assert response.candidates
     assert response.candidates[0].content.parts
 
@@ -174,9 +170,8 @@ async def test_thinking_with_function_calling(gemini_client: GeminiClient):
     assert len(signature_parts) > 0, "Should include thought signatures"
 
 
-@pytest.mark.asyncio
 @pytest.mark.slow
-async def test_thinking_multi_turn_with_signatures(gemini_client: GeminiClient):
+async def test_thinking_multi_turn_with_signatures():
     """Test maintaining thought context across turns using signatures."""
 
     request1 = GenerateRequest(
@@ -193,7 +188,7 @@ async def test_thinking_multi_turn_with_signatures(gemini_client: GeminiClient):
         ),
     )
 
-    response1 = await gemini_client.generate_content_sync(request1)
+    response1 = await gemini.generate_content_sync(request1)
     assert response1.candidates
 
     conversation = [
@@ -224,5 +219,5 @@ async def test_thinking_multi_turn_with_signatures(gemini_client: GeminiClient):
         ),
     )
 
-    response2 = await gemini_client.generate_content_sync(request2)
+    response2 = await gemini.generate_content_sync(request2)
     assert response2.candidates

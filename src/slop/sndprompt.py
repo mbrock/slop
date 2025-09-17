@@ -9,10 +9,10 @@ from subprocess import PIPE
 import anyio
 from fastapi import HTTPException
 
+from slop import gemini
 from slop.gemini import (
     Content,
     FileData,
-    GeminiClient,
     GenerateRequest,
     GenerationConfig,
     Part,
@@ -104,15 +104,14 @@ async def transcribe_audio_segment(
             finally:
                 tmp_path.unlink()
 
-    # Upload the current segment audio to Gemini.
-    client = GeminiClient(model=interview.model_name)
     if segment_audio is None:
         raise HTTPException(
             status_code=500,
             detail="Failed to load audio segment",
         )
 
-    current_file = await client.upload_bytes(
+    # Upload the current segment audio to Gemini.
+    current_file = await gemini.upload_bytes(
         segment_audio,
         mime_type="audio/ogg",
         display_name=f"segment_{start_time}",
@@ -133,7 +132,7 @@ async def transcribe_audio_segment(
                     )
                     continue
                 prev_audio_data, _ = prev_blob
-                prev_file = await client.upload_bytes(
+                prev_file = await gemini.upload_bytes(
                     prev_audio_data,
                     mime_type="audio/ogg",
                     display_name=f"context_segment_{i}_{prev_segment.start_time}",
@@ -203,7 +202,7 @@ async def transcribe_audio_segment(
         contents=conversation,
         generationConfig=GenerationConfig(temperature=0.1),
     )
-    response = await client.generate_content_sync(request)
+    response = await gemini.generate_content_sync(request)
 
     if not response.candidates:
         raise HTTPException(status_code=500, detail="Failed to transcribe segment")
@@ -235,7 +234,6 @@ async def improve_speaker_identification_segment(
     current_utterances: list[Utterance],
     context_segments: list[Segment] | None = None,
     hint: str | None = None,
-    model_name: str = "gemini-2.0-flash-exp",
 ) -> list[Utterance]:
     """
     Use Gemini to improve speaker identification for an audio segment.
@@ -250,8 +248,7 @@ async def improve_speaker_identification_segment(
     Returns:
         List of utterances with improved speaker assignments
     """
-    client = GeminiClient(model=model_name)
-    file = await client.upload_bytes(
+    file = await gemini.upload_bytes(
         segment_audio,
         mime_type="audio/ogg",
         display_name="segment_to_improve",
@@ -271,7 +268,7 @@ async def improve_speaker_identification_segment(
                     )
                     continue
                 prev_audio_data, _ = prev_blob
-                prev_file = await client.upload_bytes(
+                prev_file = await gemini.upload_bytes(
                     prev_audio_data,
                     mime_type="audio/ogg",
                     display_name=f"context_segment_{i}_{prev_segment.start_time}",
@@ -332,7 +329,8 @@ Guidelines:
         contents=[Content(role="user", parts=parts)],
         generationConfig=GenerationConfig(temperature=0.1),
     )
-    response = await client.generate_content_sync(request)
+    response = await gemini.generate_content_sync(request)
+
     if not response.candidates:
         raise HTTPException(
             status_code=500, detail="Failed to improve speaker identification"

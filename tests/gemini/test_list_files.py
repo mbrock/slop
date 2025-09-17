@@ -1,20 +1,18 @@
 """Test file listing with Gemini API."""
 
-import pytest
-from src.slop.gemini import GeminiClient
+from src.slop import gemini
 
 
-@pytest.mark.asyncio
-async def test_list_files(gemini_client):
+async def test_list_files():
     """Test listing files."""
-    file_list = await gemini_client.list_files(page_size=5)
-    
+    file_list = await gemini.list_files(page_size=5)
+
     # Should return a FileList object
-    assert hasattr(file_list, 'files')
+    assert hasattr(file_list, "files")
     assert isinstance(file_list.files, list)
-    
+
     # Check file attributes if any files exist
     if file_list.files:
         file = file_list.files[0]
-        assert hasattr(file, 'name')
-        assert hasattr(file, 'uri')
+        assert hasattr(file, "name")
+        assert hasattr(file, "uri")

@@ -1,12 +1,10 @@
 """Test function calling with Gemini API."""
 
-import pytest
-
+from src.slop import gemini
 from src.slop.gemini import (
     Content,
     FunctionCallingConfig,
     FunctionDeclaration,
-    GeminiClient,
     GenerateRequest,
     Part,
     Tool,
@@ -14,8 +12,7 @@ from src.slop.gemini import (
 )
 
 
-@pytest.mark.asyncio
-async def test_function_calling(gemini_client: GeminiClient):
+async def test_function_calling():
     """Test function calling feature."""
     # Define a function for getting weather
     weather_function = FunctionDeclaration(
@@ -49,7 +46,7 @@ async def test_function_calling(gemini_client: GeminiClient):
         toolConfig=tool_config,
     )
 
-    response = await gemini_client.generate_content_sync(request)
+    response = await gemini.generate_content_sync(request)
     assert response.candidates
 
     # Model can either call the function or respond with text

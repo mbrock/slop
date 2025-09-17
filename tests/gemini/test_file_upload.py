@@ -3,20 +3,11 @@
 import tempfile
 from pathlib import Path
 
-import pytest
-
-from src.slop.gemini import (
-    Content,
-    FileData,
-    FileState,
-    GeminiClient,
-    GenerateRequest,
-    Part,
-)
+from src.slop import gemini
+from src.slop.gemini import Content, FileData, FileState, GenerateRequest, Part
 
 
-@pytest.mark.asyncio
-async def test_file_upload_and_processing(gemini_client):
+async def test_file_upload_and_processing():
     """Test file upload and processing."""
 
     # Create a temporary text file
@@ -28,7 +19,7 @@ async def test_file_upload_and_processing(gemini_client):
 
     try:
         # Upload the file
-        file = await gemini_client.upload_file(temp_path, display_name="Test File")
+        file = await gemini.upload_file(temp_path, display_name="Test File")
         assert file.name
         assert file.uri
         assert file.state == FileState.ACTIVE
@@ -44,11 +35,11 @@ async def test_file_upload_and_processing(gemini_client):
             )
         )
 
-        response = await gemini_client.generate_content_sync(request)
+        response = await gemini.generate_content_sync(request)
         assert response.candidates
 
         # Clean up
-        await gemini_client.delete_file(file.name)
+        await gemini.delete_file(file.name)
 
     finally:
         # Clean up temp file

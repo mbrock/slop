@@ -2,16 +2,11 @@
 
 import os
 
+import httpx
 import pytest
+import pytest_asyncio
 
-from src.slop.gemini import GeminiClient
-
-
-def pytest_configure(config: pytest.Config):
-    """Configure pytest."""
-    # Check for API key
-    if not os.getenv("GOOGLE_API_KEY"):
-        pytest.exit("GOOGLE_API_KEY environment variable not set", 1)
+from src.slop import gemini
 
 
 def pytest_addoption(parser: pytest.Parser):
@@ -35,31 +30,18 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_slow)
 
 
-@pytest.fixture
-async def gemini_client():
-    """Fixture that provides a GeminiClient with gemini-2.5-flash-lite model."""
-    client = GeminiClient(model="gemini-2.5-flash-lite")
-    try:
-        yield client
-    finally:
-        await client.close()
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def configure_gemini_context():
+    """Bind shared Gemini context for the entire test session."""
 
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        pytest.exit("GOOGLE_API_KEY environment variable not set", 1)
 
-@pytest.fixture
-async def gemini_client_pro():
-    """Fixture that provides a GeminiClient with gemini-2.5-flash model."""
-    client = GeminiClient(model="gemini-2.5-flash")
-    try:
-        yield client
-    finally:
-        await client.close()
+    default_model = "gemini-2.5-flash-lite"
 
-
-@pytest.fixture
-async def gemini_client_exp():
-    """Fixture that provides a GeminiClient with gemini-2.0-flash-exp model."""
-    client = GeminiClient(model="gemini-2.0-flash-exp")
-    try:
-        yield client
-    finally:
-        await client.close()
+    async with httpx.AsyncClient() as client:
+        with gemini.http_client.using(client):
+            with gemini.api_key.using(api_key):
+                with gemini.model.using(default_model):
+                    yield

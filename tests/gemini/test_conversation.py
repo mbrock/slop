@@ -1,12 +1,10 @@
 """Test multi-turn conversation with Gemini API."""
 
-import pytest
+from src.slop import gemini
+from src.slop.gemini import Content, GenerateRequest, Part
 
-from src.slop.gemini import Content, GeminiClient, GenerateRequest, Part
 
-
-@pytest.mark.asyncio
-async def test_multi_turn_conversation(gemini_client: GeminiClient):
+async def test_multi_turn_conversation():
     """Test multi-turn conversation."""
     # Build conversation history
     contents = [
@@ -18,7 +16,7 @@ async def test_multi_turn_conversation(gemini_client: GeminiClient):
     ]
 
     request = GenerateRequest(contents=contents)
-    response = await gemini_client.generate_content_sync(request)
+    response = await gemini.generate_content_sync(request)
 
     assert response.candidates
     assert len(response.candidates) > 0
