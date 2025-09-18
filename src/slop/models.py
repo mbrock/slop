@@ -69,9 +69,9 @@ def get_data_dir() -> Path:
 
 
 @contextmanager
-def sqlite(data_dir: Path, db_name: str):
+def sqlite_connection(db_path: str):
     """Context manager for SQLite database connection."""
-    conn = sqlite3.connect(data_dir / db_name)
+    conn = sqlite3.connect(db_path)
     try:
         yield conn
     finally:

@@ -23,7 +23,8 @@ class AppState:
     client: AsyncClient
     google_api_key: str
     gemini_model: str
-    data_dir: Path
+    interviews_db_path: str
+    blobs_db_path: str
 
 
 def configure_app(application: FastAPI):
@@ -36,9 +37,9 @@ def configure_app(application: FastAPI):
                 with gemini.http_client.using(state.client):
                     with gemini.model.using(state.gemini_model):
                         # Create per-request database connections
-                        with models.sqlite(state.data_dir, "interviews.db") as interviews_conn:
+                        with models.sqlite_connection(state.interviews_db_path) as interviews_conn:
                             with models.interviews_db.using(interviews_conn):
-                                with models.sqlite(state.data_dir, "blobs.db") as blobs_conn:
+                                with models.sqlite_connection(state.blobs_db_path) as blobs_conn:
                                     with models.blobs_db.using(blobs_conn):
                                         response = await call_next(request)
                                         return response
@@ -66,10 +67,13 @@ async def lifespan(app: FastAPI):
     # Ensure data directory exists
     data_dir.mkdir(parents=True, exist_ok=True)
     
+    interviews_db_path = str(data_dir / "interviews.db")
+    blobs_db_path = str(data_dir / "blobs.db")
+    
     # Initialize databases (creates tables if needed)
-    with models.sqlite(data_dir, "interviews.db") as conn:
+    with models.sqlite_connection(interviews_db_path) as conn:
         with models.interviews_db.using(conn):
-            with models.sqlite(data_dir, "blobs.db") as blobs_conn:
+            with models.sqlite_connection(blobs_db_path) as blobs_conn:
                 with models.blobs_db.using(blobs_conn):
                     models.init_databases()
     
@@ -78,7 +82,8 @@ async def lifespan(app: FastAPI):
             client=client,
             google_api_key=api_key,
             gemini_model=gemini_model,
-            data_dir=data_dir,
+            interviews_db_path=interviews_db_path,
+            blobs_db_path=blobs_db_path,
         )
         logger.info("App state initialized")
         yield
