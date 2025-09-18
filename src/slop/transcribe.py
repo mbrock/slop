@@ -979,19 +979,10 @@ async def improve_speaker_identification(
         start_idx = max(0, segment_index - interview.context_segments)
         context_segments = interview.segments[start_idx:segment_index]
 
-    # Get the segment audio
-    if not segment.audio_hash:
-        raise HTTPException(status_code=400, detail="Segment has no audio")
-
-    segment_blob = get_blob(segment.audio_hash)
-    if not segment_blob:
-        raise HTTPException(status_code=404, detail="Segment audio not found")
-
-    audio_data, _ = segment_blob
-
     # Improve speaker identification
     utterances = await improve_speaker_identification_segment(
-        audio_data,
+        interview,
+        segment,
         segment.utterances,
         context_segments,
         hint,
