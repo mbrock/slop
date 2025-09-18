@@ -24,7 +24,8 @@ def build_app() -> FastAPI:
 async def appclient():
     """Provide an ASGI test client wired to temporary databases."""
 
-    api_key = os.getenv("GOOGLE_API_KEY", "test-api-key")
+    api_key = os.environ["GOOGLE_API_KEY"]
+
     app = build_app()
 
     with (

@@ -5,12 +5,19 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from html import escape as html_escape
-from typing import Awaitable, Callable, ContextManager, Iterable, Iterator, Mapping
-
-from slop import gemini
+from typing import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    ContextManager,
+    Iterable,
+    Iterator,
+    Mapping,
+)
 
 import anyio
 
+from slop import gemini
 from slop.gemini import (
     Content,
     File,
@@ -22,7 +29,8 @@ from slop.gemini import (
     Tool,
     ToolConfig,
 )
-from slop.models import blobs_db, get_blob
+from slop.models import get_blob
+from slop.parameter import Parameter
 
 # Mirrors TagFlow's global context tracking so helper functions can operate
 # without passing the builder around explicitly.
@@ -299,10 +307,23 @@ def append_part(part: Part) -> None:
 BlobUploader = Callable[[bytes, str], Awaitable[File]]
 
 
+@contextmanager
+def new_chat(**kwargs: object):
+    """Context manager that creates a new ConversationBuilder and sets it as current."""
+    with current_chat.using(ConversationBuilder(**kwargs)) as chat:
+        yield chat
+
+
 class ConversationBuilder:
     """Utility for collecting Gemini conversation turns via context managers."""
 
-    __slots__ = ("_auto_format", "_indent", "_contents", "_upload")
+    __slots__ = (
+        "_auto_format",
+        "_indent",
+        "_contents",
+        "_upload",
+        "_conversation_cm",
+    )
 
     def __init__(
         self,
@@ -315,15 +336,7 @@ class ConversationBuilder:
         self._indent = indent
         self._contents: list[Content] = []
         self._upload = upload
-
-    # --------------------------------------------------------------
-    # context manager protocol
-    # --------------------------------------------------------------
-    def __enter__(self) -> "ConversationBuilder":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:  # pragma: no cover - passthrough
-        return None
+        self._conversation_cm: ContextManager[None] | None = None
 
     @contextmanager
     def turn(self, role: str):
@@ -359,8 +372,6 @@ class ConversationBuilder:
 
     async def build_contents(self) -> list[Content]:
         """Resolve lazy blob references and return ready-to-send contents."""
-        print("build_contents", blobs_db.peek())
-
         contents = [content.model_copy(deep=True) for content in self._contents]
 
         blobs: dict[str, list[Part]] = {}
@@ -397,7 +408,6 @@ class ConversationBuilder:
                 raise RuntimeError(
                     "ConversationBuilder requires an upload callable to resolve blob URIs"
                 )
-            print(3, blobs_db.peek())
             blob = get_blob(blob_hash)
             if not blob:
                 raise RuntimeError(f"Blob {blob_hash} not found in blob store")
@@ -418,9 +428,7 @@ class ConversationBuilder:
                 raise RuntimeError(f"Upload for blob {blob_hash} returned no MIME type")
             resolved_data[blob_hash] = (uri, resolved_mime)
 
-        print(1, blobs_db.peek())
         async with anyio.create_task_group() as task_group:
-            print(2, blobs_db.peek())
             for blob_hash in blobs:
                 task_group.start_soon(resolve_blob, blob_hash)
 
@@ -461,10 +469,86 @@ class ConversationBuilder:
         tools: list[Tool] | None = None,
         tool_config: ToolConfig | None = None,
     ) -> GenerateContentResponse:
+        config = generation_config
+        if config is None:
+            config = current_generation_config.peek()
+
         request = await self.to_request(
-            generation_config=generation_config, tools=tools, tool_config=tool_config
+            generation_config=config, tools=tools, tool_config=tool_config
         )
-        return await gemini.generate_content_sync(request)
+        response = await gemini.generate_content_sync(request)
+
+        if response.candidates:
+            self._contents.append(response.candidates[0].content.model_copy(deep=True))
+
+        return response
+
+
+current_chat = Parameter["ConversationBuilder"]("promptflow_current_chat")
+current_generation_config = Parameter[GenerationConfig | None](
+    "promptflow_generation_config"
+)
+
+
+def _require_chat() -> "ConversationBuilder":
+    chat = current_chat.peek()
+    if chat is None:
+        raise RuntimeError("No active ConversationBuilder context")
+    return chat
+
+
+@contextmanager
+def from_user() -> Iterator[GeminiMessageBuilder]:
+    chat = _require_chat()
+    with chat.user_turn() as builder:
+        yield builder
+
+
+@contextmanager
+def from_model() -> Iterator[GeminiMessageBuilder]:
+    chat = _require_chat()
+    with chat.model_turn() as builder:
+        yield builder
+
+
+@contextmanager
+def using_generation_config(config: GenerationConfig | None):
+    with current_generation_config.using(config):
+        yield
+
+
+async def generate(
+    *,
+    generation_config: GenerationConfig | None = None,
+    tools: list[Tool] | None = None,
+    tool_config: ToolConfig | None = None,
+) -> GenerateContentResponse:
+    chat = _require_chat()
+    return await chat.complete(
+        generation_config=generation_config, tools=tools, tool_config=tool_config
+    )
+
+
+async def generate_streaming(
+    *,
+    generation_config: GenerationConfig | None = None,
+    tools: list[Tool] | None = None,
+    tool_config: ToolConfig | None = None,
+) -> AsyncIterator[GenerateContentResponse]:
+    chat = _require_chat()
+    config = generation_config
+    if config is None:
+        config = current_generation_config.peek()
+
+    request = await chat.to_request(
+        generation_config=config, tools=tools, tool_config=tool_config
+    )
+
+    with from_model() as reply:
+        async for response in gemini.generate_content(request):
+            if response.candidates:
+                reply.extend(response.candidates[0].content.parts or [])
+            yield response
 
 
 def message(

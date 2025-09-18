@@ -12,7 +12,8 @@ def test[**P, R](fn: Callable[P, R]):
 
     @functools.wraps(fn)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        print(f"❐ {name}")
+        #        print(f"❐ {name}")
+
         x = fn(*args, **kwargs)
         if hasattr(x, "__await__"):
             x = await x  # type: ignore

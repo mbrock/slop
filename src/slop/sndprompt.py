@@ -9,7 +9,7 @@ from slop import gemini
 from slop.audio import insert_segment_audio
 from slop.gemini import GenerationConfig
 from slop.models import Interview, Segment, Utterance, get_interview
-from slop.promptflow import ConversationBuilder, tag, text
+from slop.promptflow import new_chat, tag, text
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ async def transcribe_audio_segment(
         segment = Segment(start_time=start_time, end_time=end_time)
 
     # Build a multi-turn conversation using promptflow helpers.
-    with ConversationBuilder(upload=gemini.upload) as conversation:
+    with new_chat(upload=gemini.upload) as conversation:
         # Add each context segment as a separate conversation turn pair.
         if context_segments:
             for i, prev_segment in enumerate(context_segments):
@@ -182,7 +182,7 @@ async def improve_speaker_identification_segment(
     Returns:
         List of utterances with improved speaker assignments
     """
-    with ConversationBuilder(upload=gemini.upload) as prompt:
+    with new_chat(upload=gemini.upload) as prompt:
         with prompt.user_turn():
             # Include previous segments as context
             if context_segments:

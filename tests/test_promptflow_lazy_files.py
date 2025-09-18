@@ -1,15 +1,15 @@
 import tempfile
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 
 from slop.gemini import File, FileState
-from slop.models import blobs_db, init_databases, save_blob, with_databases
+from slop.models import init_databases, save_blob, with_databases
 from slop.promptflow import ConversationBuilder, file
 
 from .testing import test
 
 
-@contextmanager
-def temp_databases():
+@asynccontextmanager
+async def temp_databases():
     """Provide isolated interview/blob databases for tests that touch storage."""
 
     with (
@@ -18,15 +18,12 @@ def temp_databases():
     ):
         with with_databases(interviews_tmp.name, blobs_tmp.name):
             init_databases()
-            print("yield with temp databases")
             yield
-            print("cleanup temp databases")
 
 
 @test
 @temp_databases()
 async def test_build_contents_uploads_blob_once() -> None:
-    print("test_build_contents_uploads_blob_once", blobs_db.peek())
     data = b"audio-bytes"
     blob_hash = save_blob(data, "audio/ogg")
     uploads: list[tuple[bytes, str]] = []
@@ -45,7 +42,6 @@ async def test_build_contents_uploads_blob_once() -> None:
         file(f"blob:{blob_hash}", mime_type="audio/ogg")
         file(f"blob:{blob_hash}", mime_type="audio/ogg")
 
-    print("Before build_contents", blobs_db.peek())
     contents = await conversation.build_contents()
 
     assert uploads == [(data, "audio/ogg")]

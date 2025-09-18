@@ -3,12 +3,14 @@
 import anyio
 
 from tests import gemini_tests, test_promptflow_lazy_files, test_transcribe
+from tests.testing import scope, spawn
 
 
+@scope()
 async def main():
-    await test_promptflow_lazy_files.main()
-    await test_transcribe.main()
-    await gemini_tests.main()
+    spawn(test_promptflow_lazy_files.main)
+    spawn(test_transcribe.main)
+    spawn(gemini_tests.main)
 
 
 if __name__ == "__main__":
