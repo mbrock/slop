@@ -19,7 +19,7 @@ from tagflow import (
     text,
 )
 
-from slop import gemini
+from slop import app, gemini
 from slop.gemini import GeminiError, ModelOverloadedError
 from slop.models import (
     Interview,
@@ -640,14 +640,12 @@ def render_segment(interview_id: str, segment_index: int, segment: Segment) -> N
                     render_utterance(interview_id, segment_index, i, utterance)
 
 
-def view_segment(interview_id: str, segment_index: int):
+def view_segment():
     """Renders a single segment as a partial view."""
-    interview = load_interview_or_error(interview_id)
-
-    try:
-        segment = interview.segments[segment_index]
-    except IndexError:
-        raise HTTPException(status_code=404, detail="Segment not found")
+    interview = app.interview.get()
+    interview_id = interview.id
+    segment_index = app.segment_index.get()
+    segment = app.get_segment()
 
     render_segment(interview_id, segment_index, segment)
 
@@ -666,14 +664,12 @@ def render_utterance(interview_id, segment_index, i, utterance):
         text(utterance.text)
 
 
-def edit_segment_dialog(interview_id: str, segment_index: int):
+def edit_segment_dialog():
     """Renders the inline edit form for a segment."""
-    interview = load_interview_or_error(interview_id)
-
-    try:
-        segment = interview.segments[segment_index]
-    except IndexError:
-        raise HTTPException(status_code=404, detail="Segment not found")
+    interview = app.interview.get()
+    interview_id = interview.id
+    segment_index = app.segment_index.get()
+    segment = app.get_segment()
 
     # Convert utterances to text format
     text_content = "\n\n".join(f"{u.speaker}: {u.text}" for u in segment.utterances)
@@ -742,11 +738,12 @@ def edit_segment_dialog(interview_id: str, segment_index: int):
                             pass
 
 
-def view_interview(interview_id: str):
+def view_interview():
     """
     Renders the interview page, showing the audio player and segments.
     """
-    interview = load_interview_or_error(interview_id)
+    interview = app.interview.get()
+    interview_id = interview.id
 
     with layout(f"Interview - {interview.filename}"):
         with tag.div(classes="prose mx-auto"):
@@ -786,10 +783,14 @@ def view_interview(interview_id: str):
                     )
 
 
-def get_audio(hash_: str, range_header: str | None):
+def get_audio():
     """
     Serve audio file by hash with support for range requests.
     """
+    req = app.request.get()
+    hash_ = req.path_params["hash_"]
+    range_header = req.headers.get("range")
+
     try:
         data, mime_type = get_blob(hash_)
     except KeyError:
@@ -834,12 +835,13 @@ def get_audio(hash_: str, range_header: str | None):
     )
 
 
-async def transcribe_next_segment(interview_id: str):
+async def transcribe_next_segment():
     """
     Transcribe the next audio segment (2 minutes) for the given interview.
     Returns just the new segment as a partial view.
     """
-    interview = load_interview_or_error(interview_id)
+    interview = app.interview.get()
+    interview_id = interview.id
 
     # Get context segments
     context_segments = []
@@ -910,14 +912,12 @@ async def transcribe_next_segment(interview_id: str):
                 text(e.message)
 
 
-async def retranscribe_segment(interview_id: str, segment_index: int):
+async def retranscribe_segment():
     """Retranscribe a specific segment using Gemini."""
-    interview = load_interview_or_error(interview_id)
-
-    try:
-        segment = interview.segments[segment_index]
-    except IndexError:
-        raise HTTPException(status_code=404, detail="Segment not found")
+    interview = app.interview.get()
+    interview_id = interview.id
+    segment_index = app.segment_index.get()
+    segment = app.get_segment()
 
     # Get context segments
     context_segments = []
@@ -942,16 +942,12 @@ async def retranscribe_segment(interview_id: str, segment_index: int):
     render_segment(interview_id, segment_index, segment)
 
 
-async def improve_speaker_identification(
-    interview_id: str, segment_index: int, hint: str | None
-):
+async def improve_speaker_identification(hint: str | None = None):
     """Improve speaker identification for a specific segment using Gemini."""
-    interview = load_interview_or_error(interview_id)
-
-    try:
-        segment = interview.segments[segment_index]
-    except IndexError:
-        raise HTTPException(status_code=404, detail="Segment not found")
+    interview = app.interview.get()
+    interview_id = interview.id
+    segment_index = app.segment_index.get()
+    segment = app.get_segment()
 
     # Get context segments
     context_segments = []
@@ -1017,14 +1013,12 @@ async def get_audio_duration(input_path: Path) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def update_segment(interview_id: str, segment_index: int, content: str):
+def update_segment(content: str):
     """Updates a segment's utterances from the edit form."""
-    interview = load_interview_or_error(interview_id)
-
-    try:
-        segment = interview.segments[segment_index]
-    except IndexError:
-        raise HTTPException(status_code=404, detail="Segment not found")
+    interview = app.interview.get()
+    interview_id = interview.id
+    segment_index = app.segment_index.get()
+    segment = app.get_segment()
 
     # Get the last speaker from the previous segment if it exists
     last_speaker = None
@@ -1067,9 +1061,10 @@ def update_segment(interview_id: str, segment_index: int, content: str):
             render_utterance(interview_id, segment_index, i, utterance)
 
 
-def rename_interview(interview_id: str, new_name: str) -> RedirectResponse:
+def rename_interview(new_name: str) -> RedirectResponse:
     """Processes the interview rename."""
-    interview = load_interview_or_error(interview_id)
+    interview = app.interview.get()
+    interview_id = interview.id
     if not new_name:
         raise HTTPException(status_code=400, detail="New name required")
 
@@ -1079,9 +1074,9 @@ def rename_interview(interview_id: str, new_name: str) -> RedirectResponse:
     return RedirectResponse(url=f"/interview/{interview_id}", status_code=303)
 
 
-def export_interview(interview_id: str):
+def export_interview():
     """Export the interview as a DOCX file."""
-    interview = load_interview_or_error(interview_id)
+    interview = app.interview.get()
 
     # Create a new document
     doc = Document()
@@ -1124,9 +1119,9 @@ def export_interview(interview_id: str):
     )
 
 
-def update_context_segments(interview_id: str, context_segments: int) -> Response:
+def update_context_segments(context_segments: int) -> Response:
     """Updates the number of context segments to use for transcription."""
-    interview = load_interview_or_error(interview_id)
+    interview = app.interview.get()
 
     interview.context_segments = max(
         0, min(5, context_segments)
@@ -1136,17 +1131,17 @@ def update_context_segments(interview_id: str, context_segments: int) -> Respons
     return Response(status_code=204)  # No content response
 
 
-def update_speaker(
-    interview_id: str, segment_index: int, utterance_index: int, key: str
-):
+def update_speaker(utterance_index: int, key: str):
     """Updates the speaker for a specific utterance."""
-    interview = load_interview_or_error(interview_id)
+    interview = app.interview.get()
+    interview_id = interview.id
+    segment_index = app.segment_index.get()
+    segment = app.get_segment()
 
     try:
-        segment = interview.segments[segment_index]
         utterance = segment.utterances[utterance_index]
     except IndexError:
-        raise HTTPException(status_code=404, detail="Segment or utterance not found")
+        raise HTTPException(status_code=404, detail="Utterance not found")
 
     # Update speaker if key is a digit
     if key.isdigit():
