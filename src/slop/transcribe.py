@@ -1,20 +1,24 @@
 import logging
-import os
 import re
 import tempfile
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from subprocess import PIPE
 
 import anyio
-import httpx
 from docx import Document
 from docx.shared import Pt
-from fastapi import FastAPI, Form, HTTPException, Request, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import RedirectResponse, StreamingResponse
 from tagflow import (
-    DocumentMiddleware,
     Live,
     TagResponse,
     attr,
@@ -26,11 +30,14 @@ from tagflow import (
 from slop import gemini
 from slop.gemini import GeminiError, ModelOverloadedError
 from slop.models import (
-    BLOBS,
-    INTERVIEWS,
     Interview,
     Segment,
     Utterance,
+    get_blob,
+    get_interview,
+    list_interviews,
+    save_blob,
+    save_interview,
 )
 from slop.sndprompt import (
     improve_speaker_identification_segment,
@@ -43,7 +50,7 @@ logger = logging.getLogger("slop.transcribe")
 # Initialize Live instance for WebSocket support
 live = Live()
 
-DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
 MODEL_CHOICES = [
     "gemini-2.5-flash",
     "gemini-2.5-pro",
@@ -62,32 +69,9 @@ IMPROVE_SPEAKERS_ONCLICK = (
 )
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    FastAPI lifespan manager using the Live WebSocket support from TagFlow.
-    """
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise RuntimeError("GOOGLE_API_KEY environment variable must be set")
-
-    async with httpx.AsyncClient() as client:
-        with gemini.http_client.using(client):
-            with gemini.api_key.using(api_key):
-                with gemini.model.using(DEFAULT_GEMINI_MODEL):
-                    async with live.run(app):
-                        logger.info("Live server started")
-                        yield
-
-    logger.info("Live server stopped")
-
-
-app = FastAPI(
-    lifespan=lifespan,
+app = APIRouter(
     default_response_class=TagResponse,
-    title="Slop Interview",
 )
-app.add_middleware(DocumentMiddleware)
 
 
 @contextmanager
@@ -168,12 +152,12 @@ def calculate_progress(current: str, total: str) -> int:
 
 
 @app.get("/interview-list")
-def interview_list():
+async def interview_list():
     """
     Renders the interview list page.
     """
     with tag.div(classes="space-y-4", id="interview-list"):
-        for interview in INTERVIEWS.values():
+        for interview in list_interviews():
             progress = calculate_progress(
                 interview.current_position, interview.duration
             )
@@ -197,14 +181,14 @@ def interview_list():
 
 
 @app.get("/home")
-def render_home():
+async def render_home():
     breadcrumb({"Ieva's Interviews": "#"})
     with tag.div(classes="max-w-4xl mx-auto p-4"):
         with tag.div(classes="mb-8"):
             # with tag.h1(classes="text-2xl font-bold mb-4"):
             #     text("Ieva's Interviews")
 
-            interview_list()
+            await interview_list()
 
         with tag.div(classes="prose mx-auto"):
             upload_area(target="main")
@@ -216,7 +200,7 @@ async def home():
     Renders the home page with an upload area.
     """
     with layout("Home"):
-        render_home()
+        await render_home()
 
 
 async def process_audio(input_path: Path) -> bytes:
@@ -276,17 +260,17 @@ async def upload_audio(audio: UploadFile):
 
             # Process and store the audio
             processed_audio = await process_audio(tmp_path)
-            audio_hash = BLOBS.put(processed_audio, "audio/ogg")
+            audio_hash = save_blob(processed_audio, "audio/ogg")
 
             # Create interview record
-            interview_id = str(len(list(INTERVIEWS.values())) + 1)
+            interview_id = str(len(list_interviews()) + 1)
             interview = Interview(
                 id=interview_id,
                 filename=upload_name,
                 audio_hash=audio_hash,
                 duration=duration,
             )
-            INTERVIEWS.put(interview_id, interview)
+            save_interview(interview)
         finally:
             tmp_path.unlink()
 
@@ -548,7 +532,7 @@ def button_view(label: str, href: str | None = None, type: str = "button", **att
 
 def interview_header(title: str, interview_id: str):
     """Renders the interview header with title and action buttons."""
-    interview = INTERVIEWS.get(interview_id)
+    interview = get_interview(interview_id)
     context_segments_value = str(interview.context_segments) if interview else "0"
 
     with tag.div():
@@ -620,7 +604,7 @@ def interview_header(title: str, interview_id: str):
 @app.get("/interview/{interview_id}/segment/{segment_index}")
 async def view_segment(interview_id: str, segment_index: int):
     """Renders a single segment as a partial view."""
-    if not (interview := INTERVIEWS.get(interview_id)):
+    if not (interview := get_interview(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     try:
@@ -692,7 +676,7 @@ def render_utterance(interview_id, segment_index, i, utterance):
 @app.get("/interview/{interview_id}/segment/{segment_index}/edit")
 async def edit_segment_dialog(interview_id: str, segment_index: int):
     """Renders the inline edit form for a segment."""
-    if not (interview := INTERVIEWS.get(interview_id)):
+    if not (interview := get_interview(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     try:
@@ -771,7 +755,7 @@ async def view_interview(interview_id: str):
     """
     Renders the interview page, showing the audio player and segments.
     """
-    if not (interview := INTERVIEWS.get(interview_id)):
+    if not (interview := get_interview(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     with layout(f"Interview - {interview.filename}"):
@@ -817,7 +801,7 @@ async def get_audio(hash_: str, request: Request):
     """
     Serve audio file by hash with support for range requests.
     """
-    if not (result := BLOBS.get(hash_)):
+    if not (result := get_blob(hash_)):
         raise HTTPException(status_code=404, detail="Audio not found")
 
     data, mime_type = result
@@ -870,7 +854,7 @@ async def transcribe_next_segment(
     Transcribe the next audio segment (2 minutes) for the given interview.
     Returns just the new segment as a partial view.
     """
-    if not (interview := INTERVIEWS.get(interview_id)):
+    if not (interview := get_interview(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     # Get context segments
@@ -905,7 +889,7 @@ async def transcribe_next_segment(
 
         # Append segment to interview and save
         interview.segments.append(segment)
-        INTERVIEWS.put(interview_id, interview)
+        save_interview(interview)
 
         # Return the new segment as a partial view
         return await view_segment(interview_id, len(interview.segments) - 1)
@@ -948,7 +932,7 @@ async def retranscribe_segment(
     segment_index: int,
 ):
     """Retranscribe a specific segment using Gemini."""
-    if not (interview := INTERVIEWS.get(interview_id)):
+    if not (interview := get_interview(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     try:
@@ -973,7 +957,7 @@ async def retranscribe_segment(
     # Update the segment
     segment.audio_hash = segment_hash
     segment.utterances = utterances
-    INTERVIEWS.put(interview_id, interview)
+    save_interview(interview)
 
     # Return the updated segment view
     return await view_segment(interview_id, segment_index)
@@ -986,7 +970,7 @@ async def improve_speaker_identification(
     hint: str | None = Form(None),
 ):
     """Improve speaker identification for a specific segment using Gemini."""
-    if not (interview := INTERVIEWS.get(interview_id)):
+    if not (interview := get_interview(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     try:
@@ -1004,7 +988,7 @@ async def improve_speaker_identification(
     if not segment.audio_hash:
         raise HTTPException(status_code=400, detail="Segment has no audio")
 
-    segment_blob = BLOBS.get(segment.audio_hash)
+    segment_blob = get_blob(segment.audio_hash)
     if not segment_blob:
         raise HTTPException(status_code=404, detail="Segment audio not found")
 
@@ -1020,7 +1004,7 @@ async def improve_speaker_identification(
 
     # Update the segment
     segment.utterances = utterances
-    INTERVIEWS.put(interview_id, interview)
+    save_interview(interview)
 
     # Return the updated segment view
     return await view_segment(interview_id, segment_index)
@@ -1074,7 +1058,7 @@ async def update_segment(
     content: str = Form(...),
 ):
     """Updates a segment's utterances from the edit form."""
-    if not (interview := INTERVIEWS.get(interview_id)):
+    if not (interview := get_interview(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     try:
@@ -1115,7 +1099,7 @@ async def update_segment(
 
     # Update the segment
     segment.utterances = utterances
-    INTERVIEWS.put(interview_id, interview)
+    save_interview(interview)
 
     # Return the updated segment view
     with tag.div(classes="flex flex-wrap gap-4"):
@@ -1126,11 +1110,11 @@ async def update_segment(
 @app.post("/interview/{interview_id}/rename")
 async def rename_interview(interview_id: str, new_name: str = Form(...)):
     """Processes the interview rename."""
-    if not (interview := INTERVIEWS.get(interview_id)):
+    if not (interview := get_interview(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     interview.filename = new_name
-    INTERVIEWS.put(interview_id, interview)
+    save_interview(interview)
 
     return RedirectResponse(url=f"/interview/{interview_id}", status_code=303)
 
@@ -1138,7 +1122,7 @@ async def rename_interview(interview_id: str, new_name: str = Form(...)):
 @app.get("/interview/{interview_id}/export")
 async def export_interview(interview_id: str):
     """Export the interview as a DOCX file."""
-    if not (interview := INTERVIEWS.get(interview_id)):
+    if not (interview := get_interview(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     # Create a new document
@@ -1185,13 +1169,13 @@ async def export_interview(interview_id: str):
 @app.post("/interview/{interview_id}/context-segments")
 async def update_context_segments(interview_id: str, context_segments: int = Form(...)):
     """Updates the number of context segments to use for transcription."""
-    if not (interview := INTERVIEWS.get(interview_id)):
+    if not (interview := get_interview(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     interview.context_segments = max(
         0, min(5, context_segments)
     )  # Clamp between 0 and 5
-    INTERVIEWS.put(interview_id, interview)
+    save_interview(interview)
 
     return Response(status_code=204)  # No content response
 
@@ -1204,7 +1188,7 @@ async def update_speaker(
     key: str = Form(...),
 ):
     """Updates the speaker for a specific utterance."""
-    if not (interview := INTERVIEWS.get(interview_id)):
+    if not (interview := get_interview(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     try:
@@ -1216,7 +1200,7 @@ async def update_speaker(
     # Update speaker if key is a digit
     if key.isdigit():
         utterance.speaker = f"S{key}"
-        INTERVIEWS.put(interview_id, interview)
+        save_interview(interview)
 
     # Return the updated utterance view
     return render_utterance(interview_id, segment_index, utterance_index, utterance)

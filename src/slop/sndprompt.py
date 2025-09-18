@@ -17,7 +17,7 @@ from slop.gemini import (
     GenerationConfig,
     Part,
 )
-from slop.models import BLOBS, INTERVIEWS, Segment, Utterance
+from slop.models import get_blob, save_blob, get_interview, Segment, Utterance
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ async def transcribe_audio_segment(
         context_segments: List of previous segments for context, ordered from oldest to newest
     """
     # Retrieve interview and validate.
-    if not (interview := INTERVIEWS.get(interview_id)):
+    if not (interview := get_interview(interview_id)):
         raise HTTPException(status_code=404, detail="Interview not found")
 
     if not interview.audio_hash:
@@ -74,7 +74,7 @@ async def transcribe_audio_segment(
     # Get or extract the audio segment.
     segment_audio: bytes | None = None
     if segment.audio_hash:
-        if stored_segment := BLOBS.get(segment.audio_hash):
+        if stored_segment := get_blob(segment.audio_hash):
             logger.info(f"Found cached audio segment {segment.audio_hash}")
             segment_audio = stored_segment[0]
 
@@ -82,7 +82,7 @@ async def transcribe_audio_segment(
         # Extract the segment if not cached.
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
             # Get the full interview audio.
-            interview_blob = BLOBS.get(interview.audio_hash)
+            interview_blob = get_blob(interview.audio_hash)
             if not interview_blob:
                 raise HTTPException(
                     status_code=404,
@@ -97,7 +97,7 @@ async def transcribe_audio_segment(
                 # Extract the segment audio.
                 segment_audio = await extract_segment(tmp_path, start_time, end_time)
                 # Store in blob store and update segment.
-                segment.audio_hash = BLOBS.put(segment_audio, "audio/ogg")
+                segment.audio_hash = save_blob(segment_audio, "audio/ogg")
                 logger.info(
                     f"Extracted and stored new audio segment {segment.audio_hash}"
                 )
@@ -124,7 +124,7 @@ async def transcribe_audio_segment(
     if context_segments:
         for i, prev_segment in enumerate(context_segments):
             if prev_segment.audio_hash:
-                prev_blob = BLOBS.get(prev_segment.audio_hash)
+                prev_blob = get_blob(prev_segment.audio_hash)
                 if not prev_blob:
                     logger.warning(
                         "Missing audio blob for previous segment %s",
@@ -260,7 +260,7 @@ async def improve_speaker_identification_segment(
     if context_segments:
         for i, prev_segment in enumerate(context_segments):
             if prev_segment.audio_hash:
-                prev_blob = BLOBS.get(prev_segment.audio_hash)
+                prev_blob = get_blob(prev_segment.audio_hash)
                 if not prev_blob:
                     logger.warning(
                         "Missing audio blob for previous segment %s",

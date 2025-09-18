@@ -1,8 +1,12 @@
 import hashlib
 import os
-from pathlib import Path
 import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
+
 from pydantic import BaseModel, Field
+
+from slop.parameter import Parameter
 
 
 class PartitionSegment(BaseModel):
@@ -54,101 +58,91 @@ class Interview(BaseModel):
     segments: list[Segment] = []
 
 
-class BlobStore:
-    """
-    Content-addressed store for binary data.
-    """
-
-    def __init__(self, db_path: str | Path):
-        self.db_path = Path(db_path)
-        self._init_db()
-
-    def _init_db(self):
-        """Initialize the database with a blobs table."""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS blobs (
-                    hash TEXT PRIMARY KEY,
-                    data BLOB NOT NULL,
-                    mime_type TEXT NOT NULL
-                )
-                """
-            )
-
-    def put(self, data: bytes, mime_type: str) -> str:
-        """Store binary data and return its hash."""
-        hash_ = hashlib.sha256(data).hexdigest()
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO blobs (hash, data, mime_type) VALUES (?, ?, ?)",
-                (hash_, data, mime_type),
-            )
-        return hash_
-
-    def get(self, hash_: str) -> tuple[bytes, str] | None:
-        """Get binary data and mime type by hash."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT data, mime_type FROM blobs WHERE hash = ?", (hash_,)
-            )
-            if row := cursor.fetchone():
-                return row[0], row[1]
-            return None
+# Parameters for database connections
+interviews_db: Parameter[sqlite3.Connection] = Parameter("interviews_db")
+blobs_db: Parameter[sqlite3.Connection] = Parameter("blobs_db")
 
 
-data_dir = os.getenv("IEVA_DATA", "/data")
+def get_data_dir() -> Path:
+    """Get the data directory from environment or default."""
+    return Path(os.getenv("IEVA_DATA", "/data"))
 
 
-class Store[T: BaseModel]:
-    """
-    A simple key-value store using SQLite and a Pydantic model.
-    """
-
-    def __init__(self, db_path: str | Path, model_class: type[T]):
-        self.db_path = Path(db_path)
-        self.model_class = model_class
-        self._init_db()
-
-    def _init_db(self):
-        """Initialize the database with a key-value table."""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS store (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                )
-                """
-            )
-
-    def get(self, key: str) -> T | None:
-        """Get a value by key."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT value FROM store WHERE key = ?", (key,))
-            if row := cursor.fetchone():
-                return self.model_class.model_validate_json(row[0])
-            return None
-
-    def put(self, key: str, value: T):
-        """Store a value by key."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
-                (key, value.model_dump_json()),
-            )
-
-    def values(self) -> list[T]:
-        """Get all values."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT value FROM store")
-            return [
-                self.model_class.model_validate_json(row[0])
-                for row in cursor.fetchall()
-            ]
+@contextmanager
+def sqlite(data_dir: Path, db_name: str):
+    """Context manager for SQLite database connection."""
+    conn = sqlite3.connect(data_dir / db_name)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
-INTERVIEWS = Store[Interview](Path(data_dir, "interviews.db"), Interview)
-BLOBS = BlobStore(Path(data_dir, "blobs.db"))
+def init_databases():
+    interviews_db.get().execute(
+        """
+        CREATE TABLE IF NOT EXISTS store (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+
+    blobs_db.get().execute(
+        """
+        CREATE TABLE IF NOT EXISTS blobs (
+            hash TEXT PRIMARY KEY,
+            data BLOB NOT NULL,
+            mime_type TEXT NOT NULL
+        )
+        """
+    )
+
+
+# Interview functions
+def get_interview(interview_id: str) -> Interview | None:
+    """Get an interview by ID."""
+    conn = interviews_db.get()
+    cursor = conn.execute("SELECT value FROM store WHERE key = ?", (interview_id,))
+    if row := cursor.fetchone():
+        return Interview.model_validate_json(row[0])
+    return None
+
+
+def save_interview(interview: Interview) -> None:
+    """Save an interview."""
+    conn = interviews_db.get()
+    conn.execute(
+        "INSERT OR REPLACE INTO store (key, value) VALUES (?, ?)",
+        (interview.id, interview.model_dump_json()),
+    )
+    conn.commit()
+
+
+def list_interviews() -> list[Interview]:
+    """Get all interviews."""
+    conn = interviews_db.get()
+    cursor = conn.execute("SELECT value FROM store")
+    return [Interview.model_validate_json(row[0]) for row in cursor.fetchall()]
+
+
+# Blob functions
+def save_blob(data: bytes, mime_type: str) -> str:
+    """Store binary data and return its hash."""
+    hash_ = hashlib.sha256(data).hexdigest()
+    conn = blobs_db.get()
+    conn.execute(
+        "INSERT OR IGNORE INTO blobs (hash, data, mime_type) VALUES (?, ?, ?)",
+        (hash_, data, mime_type),
+    )
+    conn.commit()
+    return hash_
+
+
+def get_blob(hash_: str) -> tuple[bytes, str] | None:
+    """Get binary data and mime type by hash."""
+    conn = blobs_db.get()
+    cursor = conn.execute("SELECT data, mime_type FROM blobs WHERE hash = ?", (hash_,))
+    if row := cursor.fetchone():
+        return row[0], row[1]
+    return None
