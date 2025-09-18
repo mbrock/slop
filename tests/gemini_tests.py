@@ -2,52 +2,49 @@ import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import anyio.abc
 import rich
 
 from slop import gemini
 from slop.gemini import (
-    Content,
-    FileData,
     FileState,
     FunctionCallingConfig,
     FunctionDeclaration,
     GeminiError,
-    GenerateRequest,
     GenerationConfig,
     ModelOverloadedError,
-    Part,
     ThinkingConfig,
     Tool,
     ToolConfig,
 )
+from slop.promptflow import ConversationBuilder, file as flow_file, line, text
 
 from .testing import scope, spawn, test
 
 
 @test
 async def test_basic_text_generation() -> None:
-    request = GenerateRequest(
-        contents=Content(
-            role="user", parts=[Part(text="Write a haiku about Python programming.")]
-        ),
-        generationConfig=GenerationConfig(temperature=0.7, maxOutputTokens=200),
-    )
+    with ConversationBuilder() as convo:
+        with convo.user():
+            line("Write a haiku about Python programming.")
 
-    response = await gemini.generate_content_sync(request)
+    response = await convo.complete(
+        generation_config=GenerationConfig(temperature=0.7, maxOutputTokens=200)
+    )
     assert response.candidates
     rich.print(response.candidates[0])  # DEBUG
     assert response.candidates[0].content.parts
 
-    text = response.candidates[0].content.parts[0].text
-    assert text is not None
+    text_part = response.candidates[0].content.parts[0].text
+    assert text_part is not None
 
 
 @test
 async def test_streaming_response() -> None:
-    request = GenerateRequest(
-        contents=Content(role="user", parts=[Part(text="Count from 1 to 5.")])
-    )
+    with ConversationBuilder() as convo:
+        with convo.user():
+            line("Count from 1 to 5.")
+
+    request = await convo.to_request()
 
     full_text = ""
     chunk_count = 0
@@ -99,15 +96,11 @@ async def test_function_calling() -> None:
     tool = Tool(functionDeclarations=[weather_function])
     tool_config = ToolConfig(functionCallingConfig=FunctionCallingConfig(mode="AUTO"))
 
-    request = GenerateRequest(
-        contents=Content(
-            role="user", parts=[Part(text="What's the weather like in Tokyo?")]
-        ),
-        tools=[tool],
-        toolConfig=tool_config,
-    )
+    with ConversationBuilder() as convo:
+        with convo.user():
+            line("What's the weather like in Tokyo?")
 
-    response = await gemini.generate_content_sync(request)
+    response = await convo.complete(tools=[tool], tool_config=tool_config)
     assert response.candidates
 
     part = response.candidates[0].content.parts[0]
@@ -116,27 +109,26 @@ async def test_function_calling() -> None:
 
 @test
 async def test_multi_turn_conversation() -> None:
-    contents = [
-        Content(role="user", parts=[Part(text="My name is Alice. Remember it.")]),
-        Content(
-            role="model", parts=[Part(text="I'll remember that your name is Alice.")]
-        ),
-        Content(role="user", parts=[Part(text="What's my name?")]),
-    ]
+    with ConversationBuilder() as convo:
+        with convo.user():
+            line("My name is Alice. Remember it.")
+        with convo.model():
+            line("I'll remember that your name is Alice.")
+        with convo.user():
+            line("What's my name?")
 
-    request = GenerateRequest(contents=contents)
-    response = await gemini.generate_content_sync(request)
+    response = await convo.complete()
     assert response.candidates
 
-    text = response.candidates[0].content.parts[0].text
-    assert text is not None and "Alice" in text
+    answer = response.candidates[0].content.parts[0].text
+    assert answer is not None and "Alice" in answer
 
 
 @test
 async def test_file_upload_and_processing() -> None:
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-        f.write("Line 1\nLine 2\nLine 3")
-        temp_path = Path(f.name)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as temp:
+        temp.write("Line 1\nLine 2\nLine 3")
+        temp_path = Path(temp.name)
 
     uploaded = await gemini.upload_file(temp_path, display_name="Test File")
     assert uploaded.name
@@ -144,17 +136,12 @@ async def test_file_upload_and_processing() -> None:
     assert uploaded.state == FileState.ACTIVE
 
     try:
-        request = GenerateRequest(
-            contents=Content(
-                role="user",
-                parts=[
-                    Part(text="Count the lines in this file."),
-                    Part(fileData=FileData(fileUri=uploaded.uri)),
-                ],
-            )
-        )
+        with ConversationBuilder() as convo:
+            with convo.user():
+                line("Count the lines in this file.")
+                flow_file(uploaded.uri)
 
-        response = await gemini.generate_content_sync(request)
+        response = await convo.complete()
         assert response.candidates
     finally:
         await gemini.delete_file(uploaded.name)
@@ -163,11 +150,13 @@ async def test_file_upload_and_processing() -> None:
 
 @test
 async def test_invalid_model() -> None:
-    request = GenerateRequest(contents=Content(role="user", parts=[Part(text="Hello")]))
+    with ConversationBuilder() as convo:
+        with convo.user():
+            line("Hello")
 
     with gemini.model.using("invalid-model-name"):
         try:
-            await gemini.generate_content_sync(request)
+            await convo.complete()
         except GeminiError as exc:
             message = str(exc).lower()
             assert "not found" in message or "invalid" in message
@@ -178,13 +167,15 @@ async def test_invalid_model() -> None:
 @test
 async def test_long_prompt() -> None:
     long_text = "Tell me about " + " ".join(["artificial intelligence"] * 10000)
-    request = GenerateRequest(
-        contents=Content(role="user", parts=[Part(text=long_text)]),
-        generationConfig=GenerationConfig(maxOutputTokens=10),
-    )
+
+    with ConversationBuilder() as convo:
+        with convo.user():
+            line(long_text)
 
     try:
-        response = await gemini.generate_content_sync(request)
+        response = await convo.complete(
+            generation_config=GenerationConfig(maxOutputTokens=10)
+        )
         assert response.candidates
     except GeminiError:
         pass
@@ -192,43 +183,39 @@ async def test_long_prompt() -> None:
 
 @test
 async def test_model_overload_recovery() -> None:
-    request = GenerateRequest(
-        contents=Content(role="user", parts=[Part(text="Quick test")])
-    )
+    with ConversationBuilder() as convo:
+        with convo.user():
+            line("Quick test")
 
     try:
-        response = await gemini.generate_content_sync(request)
+        response = await convo.complete()
         assert response.candidates
     except ModelOverloadedError as exc:
         assert exc.alternative_model and "flash" in exc.alternative_model
         with gemini.model.using(exc.alternative_model):
-            response = await gemini.generate_content_sync(request)
+            response = await convo.complete()
         assert response.candidates
 
 
 @test
 async def test_thinking_basic() -> None:
-    request = GenerateRequest(
-        contents=Content(
-            role="user",
-            parts=[
-                Part(
-                    text="""Solve this step-by-step problem:
+    with ConversationBuilder() as convo:
+        with convo.user():
+            text(
+                """Solve this step-by-step problem:
 
             A train leaves Station A at 9:00 AM traveling at 60 mph toward Station B.
             Another train leaves Station B at 10:00 AM traveling at 80 mph toward Station A.
             The stations are 280 miles apart.
 
             At what time will the trains meet? Show your reasoning step by step."""
-                )
-            ],
-        ),
-        generationConfig=GenerationConfig(
-            thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=512)
-        ),
-    )
+            )
 
-    response = await gemini.generate_content_sync(request)
+    response = await convo.complete(
+        generation_config=GenerationConfig(
+            thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=512)
+        )
+    )
     assert response.candidates
 
     parts = response.candidates[0].content.parts
@@ -241,14 +228,15 @@ async def test_thinking_basic() -> None:
 
 @test
 async def test_thinking_disabled() -> None:
-    request = GenerateRequest(
-        contents=Content(role="user", parts=[Part(text="What is 2 + 2?")]),
-        generationConfig=GenerationConfig(
-            thinkingConfig=ThinkingConfig(includeThoughts=False, thinkingBudget=0)
-        ),
-    )
+    with ConversationBuilder() as convo:
+        with convo.user():
+            line("What is 2 + 2?")
 
-    response = await gemini.generate_content_sync(request)
+    response = await convo.complete(
+        generation_config=GenerationConfig(
+            thinkingConfig=ThinkingConfig(includeThoughts=False, thinkingBudget=0)
+        )
+    )
     assert response.candidates
 
     for part in response.candidates[0].content.parts:
@@ -257,21 +245,15 @@ async def test_thinking_disabled() -> None:
 
 @test
 async def test_thinking_dynamic() -> None:
-    request = GenerateRequest(
-        contents=Content(
-            role="user",
-            parts=[
-                Part(
-                    text="Come up with a mildly interesting fact. Think, but not too hard."
-                ),
-            ],
-        ),
-        generationConfig=GenerationConfig(
-            thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=-1)
-        ),
-    )
+    with ConversationBuilder() as convo:
+        with convo.user():
+            line("Come up with a mildly interesting fact. Think, but not too hard.")
 
-    response = await gemini.generate_content_sync(request)
+    response = await convo.complete(
+        generation_config=GenerationConfig(
+            thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=-1)
+        )
+    )
     assert response.candidates
 
     thought_parts = [p for p in response.candidates[0].content.parts if p.thought]
@@ -298,24 +280,20 @@ async def test_thinking_with_function_calling() -> None:
     tool = Tool(functionDeclarations=[math_function])
     tool_config = ToolConfig(functionCallingConfig=FunctionCallingConfig(mode="AUTO"))
 
-    request = GenerateRequest(
-        contents=Content(
-            role="user",
-            parts=[
-                Part(
-                    text="""Calculate the compound interest on $10,000 at 5% annual rate for 3 years,
+    with ConversationBuilder() as convo:
+        with convo.user():
+            text(
+                """Calculate the compound interest on $10,000 at 5% annual rate for 3 years,
                            compounded monthly. Use the calculate function and explain your approach."""
-                )
-            ],
-        ),
+            )
+
+    response = await convo.complete(
         tools=[tool],
-        toolConfig=tool_config,
-        generationConfig=GenerationConfig(
+        tool_config=tool_config,
+        generation_config=GenerationConfig(
             thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=512)
         ),
     )
-
-    response = await gemini.generate_content_sync(request)
     assert response.candidates
 
     parts = response.candidates[0].content.parts
@@ -329,49 +307,31 @@ async def test_thinking_with_function_calling() -> None:
 
 @test
 async def test_thinking_multi_turn_with_signatures() -> None:
-    request1 = GenerateRequest(
-        contents=Content(
-            role="user",
-            parts=[
-                Part(
-                    text="What factors should we consider when designing a sustainable city?"
-                )
-            ],
-        ),
-        generationConfig=GenerationConfig(
-            thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=512)
-        ),
-    )
+    with ConversationBuilder() as first_turn:
+        with first_turn.user():
+            line("What factors should we consider when designing a sustainable city?")
 
-    response1 = await gemini.generate_content_sync(request1)
+    response1 = await first_turn.complete(
+        generation_config=GenerationConfig(
+            thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=512)
+        )
+    )
     assert response1.candidates
 
-    conversation = [
-        Content(
-            role="user",
-            parts=[
-                Part(
-                    text="What factors should we consider when designing a sustainable city?"
-                )
-            ],
-        ),
-        response1.candidates[0].content,
-        Content(
-            role="user",
-            parts=[
-                Part(text="Based on those factors, what would be the top 3 priorities?")
-            ],
-        ),
-    ]
+    model_content = response1.candidates[0].content
 
-    request2 = GenerateRequest(
-        contents=conversation,
-        generationConfig=GenerationConfig(
+    with ConversationBuilder() as follow_up:
+        with follow_up.user():
+            line("What factors should we consider when designing a sustainable city?")
+        follow_up.append(model_content)
+        with follow_up.user():
+            line("Based on those factors, what would be the top 3 priorities?")
+
+    response2 = await follow_up.complete(
+        generation_config=GenerationConfig(
             thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=512)
-        ),
+        )
     )
-
-    response2 = await gemini.generate_content_sync(request2)
     assert response2.candidates
     assert response2.candidates[0].content.parts
 

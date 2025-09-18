@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from slop import gemini
 from slop.audio import insert_segment_audio
-from slop.gemini import GenerateRequest, GenerationConfig
+from slop.gemini import GenerationConfig
 from slop.models import Interview, Segment, Utterance, get_interview
 from slop.promptflow import ConversationBuilder, tag, text
 
@@ -115,36 +115,32 @@ async def transcribe_audio_segment(
         segment = Segment(start_time=start_time, end_time=end_time)
 
     # Build a multi-turn conversation using promptflow helpers.
-    conversation = ConversationBuilder(upload=gemini.upload)
+    with ConversationBuilder(upload=gemini.upload) as conversation:
+        # Add each context segment as a separate conversation turn pair.
+        if context_segments:
+            for i, prev_segment in enumerate(context_segments):
+                with conversation.user_turn():
+                    if i == 0:
+                        render_transcription_instruction()
+                    with tag("audio", segment=str(i)):
+                        await insert_segment_audio(interview, prev_segment)
 
-    # Add each context segment as a separate conversation turn pair.
-    if context_segments:
-        for i, prev_segment in enumerate(context_segments):
-            with conversation.user_turn():
-                if i == 0:
-                    render_transcription_instruction()
-                with tag("audio", segment=str(i)):
-                    await insert_segment_audio(interview, prev_segment)
+                with conversation.model_turn():
+                    with tag("transcript"):
+                        for utterance in prev_segment.utterances:
+                            with tag("sentence", speaker=utterance.speaker):
+                                text(utterance.text, indent=True)
 
-            with conversation.model_turn():
-                with tag("transcript"):
-                    for utterance in prev_segment.utterances:
-                        with tag("sentence", speaker=utterance.speaker):
-                            text(utterance.text, indent=True)
-
-    with conversation.user_turn():
-        if not context_segments:
-            render_transcription_instruction()
-        with tag("audio", segment="current"):
-            await insert_segment_audio(interview, segment)
+        with conversation.user_turn():
+            if not context_segments:
+                render_transcription_instruction()
+            with tag("audio", segment="current"):
+                await insert_segment_audio(interview, segment)
 
     # Request transcription; the model should now respond with a transcript only for the current audio.
-    contents = await conversation.build_contents()
-    request = GenerateRequest(
-        contents=contents,
-        generationConfig=GenerationConfig(temperature=0.1),
+    response = await conversation.complete(
+        generation_config=GenerationConfig(temperature=0.1)
     )
-    response = await gemini.generate_content_sync(request)
 
     if not response.candidates:
         raise HTTPException(status_code=500, detail="Failed to transcribe segment")
@@ -186,35 +182,31 @@ async def improve_speaker_identification_segment(
     Returns:
         List of utterances with improved speaker assignments
     """
-    prompt = ConversationBuilder(upload=gemini.upload)
+    with ConversationBuilder(upload=gemini.upload) as prompt:
+        with prompt.user_turn():
+            # Include previous segments as context
+            if context_segments:
+                for i, prev_segment in enumerate(context_segments):
+                    with tag("audio", segment=str(i)):
+                        await insert_segment_audio(interview, prev_segment)
 
-    with prompt.user_turn():
-        # Include previous segments as context
-        if context_segments:
-            for i, prev_segment in enumerate(context_segments):
-                with tag("audio", segment=str(i)):
-                    await insert_segment_audio(interview, prev_segment)
+                    with tag("transcript", segment=str(i)):
+                        for utterance in prev_segment.utterances:
+                            with tag("sentence", speaker=utterance.speaker):
+                                text(utterance.text, indent=True)
 
-                with tag("transcript", segment=str(i)):
-                    for utterance in prev_segment.utterances:
-                        with tag("sentence", speaker=utterance.speaker):
-                            text(utterance.text, indent=True)
+            await insert_segment_audio(interview, segment)
 
-        await insert_segment_audio(interview, segment)
+            with tag("transcript", segment="current"):
+                for utterance in current_utterances:
+                    with tag("sentence", speaker=utterance.speaker):
+                        text(utterance.text, indent=True)
 
-        with tag("transcript", segment="current"):
-            for utterance in current_utterances:
-                with tag("sentence", speaker=utterance.speaker):
-                    text(utterance.text, indent=True)
+            render_speaker_instruction(hint)
 
-        render_speaker_instruction(hint)
-
-    contents = await prompt.build_contents()
-    request = GenerateRequest(
-        contents=contents,
-        generationConfig=GenerationConfig(temperature=0.1),
+    response = await prompt.complete(
+        generation_config=GenerationConfig(temperature=0.1)
     )
-    response = await gemini.generate_content_sync(request)
 
     if not response.candidates:
         raise HTTPException(

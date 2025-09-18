@@ -7,9 +7,21 @@ from contextvars import ContextVar, Token
 from html import escape as html_escape
 from typing import Awaitable, Callable, ContextManager, Iterable, Iterator, Mapping
 
+from slop import gemini
+
 import anyio
 
-from slop.gemini import Content, File, FileData, Part
+from slop.gemini import (
+    Content,
+    File,
+    FileData,
+    GenerateContentResponse,
+    GenerateRequest,
+    GenerationConfig,
+    Part,
+    Tool,
+    ToolConfig,
+)
 from slop.models import blobs_db, get_blob
 
 # Mirrors TagFlow's global context tracking so helper functions can operate
@@ -297,14 +309,21 @@ class ConversationBuilder:
         *,
         auto_format: bool = True,
         indent: str = "  ",
-        upload: BlobUploader | None,
+        upload: BlobUploader | None = None,
     ) -> None:
         self._auto_format = auto_format
         self._indent = indent
         self._contents: list[Content] = []
-        if upload is None:
-            raise ValueError("upload callable is required")
         self._upload = upload
+
+    # --------------------------------------------------------------
+    # context manager protocol
+    # --------------------------------------------------------------
+    def __enter__(self) -> "ConversationBuilder":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # pragma: no cover - passthrough
+        return None
 
     @contextmanager
     def turn(self, role: str):
@@ -318,6 +337,13 @@ class ConversationBuilder:
 
     def model_turn(self) -> ContextManager[GeminiMessageBuilder]:
         return self.turn("model")
+
+    # Convenience aliases -------------------------------------------------
+    def user(self) -> ContextManager[GeminiMessageBuilder]:  # pragma: no cover - thin
+        return self.user_turn()
+
+    def model(self) -> ContextManager[GeminiMessageBuilder]:  # pragma: no cover - thin
+        return self.model_turn()
 
     def append(self, content: Content) -> None:
         self._contents.append(content)
@@ -367,6 +393,10 @@ class ConversationBuilder:
         resolved_data: dict[str, tuple[str, str]] = {}
 
         async def resolve_blob(blob_hash: str) -> None:
+            if self._upload is None:
+                raise RuntimeError(
+                    "ConversationBuilder requires an upload callable to resolve blob URIs"
+                )
             print(3, blobs_db.peek())
             blob = get_blob(blob_hash)
             if not blob:
@@ -408,6 +438,33 @@ class ConversationBuilder:
                 part.fileData.mimeType = requested_mime or resolved_mime
 
         return contents
+
+    async def to_request(
+        self,
+        *,
+        generation_config: GenerationConfig | None = None,
+        tools: list[Tool] | None = None,
+        tool_config: ToolConfig | None = None,
+    ) -> GenerateRequest:
+        contents = await self.build_contents()
+        return GenerateRequest(
+            contents=contents,
+            generationConfig=generation_config,
+            tools=tools,
+            toolConfig=tool_config,
+        )
+
+    async def complete(
+        self,
+        *,
+        generation_config: GenerationConfig | None = None,
+        tools: list[Tool] | None = None,
+        tool_config: ToolConfig | None = None,
+    ) -> GenerateContentResponse:
+        request = await self.to_request(
+            generation_config=generation_config, tools=tools, tool_config=tool_config
+        )
+        return await gemini.generate_content_sync(request)
 
 
 def message(
