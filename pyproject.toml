@@ -15,6 +15,7 @@ dependencies = [
     "pydub>=0.25.1",
     "python-docx>=1.1.2",
     "anyio>=4.10.0",
+    "fastapi[standard]>=0.116.2",
 ]
 
 [build-system]
@@ -34,7 +35,7 @@ asyncio_mode = "auto"
 asyncio_default_test_loop_scope = "session"
 markers = ["slow: long-running async tests"]
 addopts = """
-    -n 16 --dist=loadfile
+    --dist=loadfile
     --timeout=10 --maxfail=5
     --durations=4
     -ra --tb=short

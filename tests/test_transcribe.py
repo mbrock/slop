@@ -18,25 +18,26 @@ from src.slop.app import AppState, configure_app
 def app():
     @asynccontextmanager
     async def lifespan(this):
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise RuntimeError("GOOGLE_API_KEY environment variable must be set")
+        api_key = os.getenv("GOOGLE_API_KEY", "test-api-key")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            with models.sqlite(Path(tmpdir), "interviews.db") as interviews_conn:
-                with models.interviews_db.using(interviews_conn):
-                    with models.sqlite(Path(tmpdir), "blobs.db") as blobs_conn:
+            data_dir = Path(tmpdir)
+            
+            # Initialize databases (creates tables if needed)
+            with models.sqlite(data_dir, "interviews.db") as conn:
+                with models.interviews_db.using(conn):
+                    with models.sqlite(data_dir, "blobs.db") as blobs_conn:
                         with models.blobs_db.using(blobs_conn):
                             models.init_databases()
-                            async with httpx.AsyncClient() as client:
-                                this.state.state = AppState(
-                                    client=client,
-                                    google_api_key=api_key,
-                                    gemini_model="gemini-2.5-flash-lite",
-                                    interview_db=interviews_conn,
-                                    blobs_db=blobs_conn,
-                                )
-                                yield
+            
+            async with httpx.AsyncClient() as client:
+                this.state.state = AppState(
+                    client=client,
+                    google_api_key=api_key,
+                    gemini_model="gemini-2.5-flash-lite",
+                    data_dir=data_dir,
+                )
+                yield
 
     return configure_app(
         FastAPI(
