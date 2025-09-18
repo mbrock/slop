@@ -18,6 +18,9 @@ class KeyValueStore(Protocol):
     def values(self) -> Iterable[str]:
         """Return an iterable of all stored JSON strings."""
 
+    def items(self) -> Iterable[tuple[str, str]]:
+        """Return ``(key, value)`` pairs for the stored JSON documents."""
+
 
 class BlobStore(Protocol):
     def get(self, hash_: str) -> tuple[bytes, str] | None:
@@ -69,6 +72,10 @@ class SQLiteKeyValueStore:
     def values(self) -> Iterable[str]:
         cursor = self._conn.execute("SELECT value FROM store")
         return [row[0] for row in cursor.fetchall()]
+
+    def items(self) -> Iterable[tuple[str, str]]:
+        cursor = self._conn.execute("SELECT key, value FROM store")
+        return [(row[0], row[1]) for row in cursor.fetchall()]
 
 
 class SQLiteBlobStore:
@@ -177,16 +184,28 @@ def save(model_instance: T, *, key: str | None = None) -> str:
     return resolved_key
 
 
-def list_models(model: type[T]) -> list[T]:
+def list_models(model: type[T], *, key_prefix: str | None = None) -> list[T]:
     """Return every stored model of the requested type."""
 
     result: list[T] = []
-    for raw in database.get().store.values():
+    store_obj = database.get().store
+
+    if key_prefix is None:
+        pairs = ((None, raw) for raw in store_obj.values())
+    else:
+        pairs = (
+            (key, raw)
+            for key, raw in store_obj.items()
+            if key.startswith(key_prefix)
+        )
+
+    for key, raw in pairs:
         try:
             result.append(model.model_validate_json(raw))
         except ValidationError as exc:
+            identifier = f" with key '{key}'" if key else ""
             raise ModelDecodeError(
-                f"Stored {model.__name__} value could not be decoded"
+                f"Stored {model.__name__}{identifier} could not be decoded"
             ) from exc
     return result
 

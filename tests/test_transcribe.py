@@ -8,7 +8,7 @@ import httpx
 
 from slop import store
 from slop.app import create_app
-from slop.models import list_tapes
+from slop.models import list_parts_for_tape, list_tapes
 from slop.parameter import Parameter
 
 from .testing import test, test_filter
@@ -129,6 +129,9 @@ async def test_transcribe_next_part_integration():
     assert upload_response.status_code == 201
     data = upload_response.json()
     assert "id" in data
+    tape_id_value = data["id"]
+    assert len(tape_id_value) == 10
+    assert set(tape_id_value) <= set("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")
 
     tapes = list_tapes()
     assert tapes, "Upload did not create any tapes"
@@ -148,9 +151,13 @@ async def test_transcribe_next_part_integration():
     tapes = list_tapes()
     tape = next((i for i in tapes if i.id == tape_id), None)
     assert tape is not None
-    assert tape.parts
 
-    part = tape.parts[-1]
+    parts = list_parts_for_tape(tape)
+    assert parts
+
+    part = parts[-1]
+    assert len(part.id) == 10
+    assert set(part.id) <= set("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")
     assert part.start_time == "00:00:00"
     assert part.end_time == "00:00:10"
     assert part.utterances

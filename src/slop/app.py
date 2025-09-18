@@ -20,7 +20,12 @@ from tagflow import TagResponse, document
 import slop.gemini as gemini
 import slop.store as store
 from slop import rest, transcribe
-from slop.models import Tape, Part
+from slop.models import (
+    Part,
+    Tape,
+    get_part as load_part_model,
+    get_tape as load_tape_model,
+)
 from slop.parameter import Parameter
 from slop.store import ModelDecodeError, ModelNotFoundError
 
@@ -63,6 +68,7 @@ class ContentForm(TypedDict):
 # ============================================================================
 
 tape = Parameter[Tape]("app_tape")
+part = Parameter[Part]("app_part")
 part_index = Parameter[int]("app_part_index")
 part_duration_seconds = Parameter[int]("app_part_duration")
 
@@ -73,17 +79,12 @@ part_duration_seconds = Parameter[int]("app_part_duration")
 
 
 def get_part() -> Part:
-    """Get the current part from context.
+    """Return the current part from context."""
 
-    Raises:
-        HTTPException: If part index is out of bounds.
-    """
-    tape_obj = tape.get()
-    idx = part_index.get()
     try:
-        return tape_obj.parts[idx]
-    except IndexError:
-        raise HTTPException(status_code=404, detail="Part not found")
+        return part.get()
+    except LookupError as exc:  # pragma: no cover - defensive guard
+        raise HTTPException(status_code=404, detail="Part not found") from exc
 
 
 # ============================================================================
@@ -94,21 +95,22 @@ def get_part() -> Part:
 def load_tape(tape_id: str) -> Tape:
     """Load an tape by ID or raise HTTP error."""
     try:
-        return store.find(Tape, tape_id)
+        return load_tape_model(tape_id)
     except ModelNotFoundError:
         raise HTTPException(status_code=404, detail="Tape not found")
     except ModelDecodeError:
         raise HTTPException(status_code=500, detail="Tape data invalid")
 
 
-def load_part_index(idx: str) -> int:
-    """Load and validate part index."""
-    index = int(idx)
-    # Validate part exists (requires tape context to be set first)
-    tape_obj = tape.get()
-    if index >= len(tape_obj.parts):
+def load_part(part_id: str) -> Part:
+    """Load a part or raise an HTTP error."""
+
+    try:
+        return load_part_model(part_id)
+    except ModelNotFoundError:
         raise HTTPException(status_code=404, detail="Part not found")
-    return index
+    except ModelDecodeError:
+        raise HTTPException(status_code=500, detail="Part data invalid")
 
 
 # ============================================================================
@@ -182,25 +184,29 @@ async def call_with_tape(
 
 async def call_with_part(
     req: Request,
-    tape_id: str,
-    part_idx: str,
+    part_id: str,
     view,
     *,
     form_model=None,
     extra_kwargs=None,
 ) -> Response:
-    """Load tape and part context before invoking the view."""
+    """Load part context before invoking the view."""
 
-    tape_obj = load_tape(tape_id)
-    with tape.using(tape_obj):
-        index = load_part_index(part_idx)
-        set_path_params(req, id=tape_id, idx=index)
-        with part_index.using(index):
-            return await call_view(
-                view,
-                form_model=form_model,
-                extra_kwargs=extra_kwargs,
-            )
+    part_obj = load_part(part_id)
+    tape_obj = load_tape(part_obj.tape_id)
+
+    try:
+        index = tape_obj.part_ids.index(part_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Part not found for tape")
+
+    with tape.using(tape_obj), part.using(part_obj), part_index.using(index):
+        set_path_params(req, id=part_id, tape_id=tape_obj.id, idx=index)
+        return await call_view(
+            view,
+            form_model=form_model,
+            extra_kwargs=extra_kwargs,
+        )
 
 
 async def route_home(req: Request, match: Match[str]) -> Response:
@@ -258,8 +264,7 @@ async def route_list_parts(req: Request, match: Match[str]) -> Response:
 async def route_get_part(req: Request, match: Match[str]) -> Response:
     return await call_with_part(
         req,
-        match.group("tape_id"),
-        match.group("idx"),
+        match.group("part_id"),
         transcribe.view_part,
     )
 
@@ -267,8 +272,7 @@ async def route_get_part(req: Request, match: Match[str]) -> Response:
 async def route_patch_part(req: Request, match: Match[str]) -> Response:
     return await call_with_part(
         req,
-        match.group("tape_id"),
-        match.group("idx"),
+        match.group("part_id"),
         transcribe.update_part,
         form_model=ContentForm,
     )
@@ -277,8 +281,7 @@ async def route_patch_part(req: Request, match: Match[str]) -> Response:
 async def route_edit_part(req: Request, match: Match[str]) -> Response:
     return await call_with_part(
         req,
-        match.group("tape_id"),
-        match.group("idx"),
+        match.group("part_id"),
         transcribe.edit_part_dialog,
     )
 
@@ -286,8 +289,7 @@ async def route_edit_part(req: Request, match: Match[str]) -> Response:
 async def route_part_jobs(req: Request, match: Match[str]) -> Response:
     return await call_with_part(
         req,
-        match.group("tape_id"),
-        match.group("idx"),
+        match.group("part_id"),
         transcribe.part_jobs,
     )
 
@@ -305,22 +307,22 @@ ROUTES: tuple[RouteDef, ...] = (
     RouteDef("GET", re.compile(r"^/tapes/(?P<tape_id>[^/]+)/parts$"), route_list_parts),
     RouteDef(
         "GET",
-        re.compile(r"^/tapes/(?P<tape_id>[^/]+)/parts/(?P<idx>\d+)$"),
+        re.compile(r"^/parts/(?P<part_id>[^/]+)$"),
         route_get_part,
     ),
     RouteDef(
         "PATCH",
-        re.compile(r"^/tapes/(?P<tape_id>[^/]+)/parts/(?P<idx>\d+)$"),
+        re.compile(r"^/parts/(?P<part_id>[^/]+)$"),
         route_patch_part,
     ),
     RouteDef(
         "GET",
-        re.compile(r"^/tapes/(?P<tape_id>[^/]+)/parts/(?P<idx>\d+)/edit$"),
+        re.compile(r"^/parts/(?P<part_id>[^/]+)/edit$"),
         route_edit_part,
     ),
     RouteDef(
         "POST",
-        re.compile(r"^/tapes/(?P<tape_id>[^/]+)/parts/(?P<idx>\d+)/jobs$"),
+        re.compile(r"^/parts/(?P<part_id>[^/]+)/jobs$"),
         route_part_jobs,
     ),
 )

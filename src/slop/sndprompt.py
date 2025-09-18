@@ -7,7 +7,14 @@ from starlette.exceptions import HTTPException
 
 from slop import conf
 from slop.audio import insert_part_audio
-from slop.models import Part, Tape, Utterance, get_tape
+from slop.models import (
+    Part,
+    Tape,
+    Utterance,
+    get_tape,
+    list_parts_for_tape,
+    new_part_id,
+)
 from slop.promptflow import (
     from_model,
     from_user,
@@ -101,13 +108,18 @@ async def transcribe_audio_part(
         raise HTTPException(status_code=400, detail="Tape has no audio")
 
     part = None
-    for candidate in tape.parts:
+    for candidate in list_parts_for_tape(tape):
         if candidate.start_time == start_time and candidate.end_time == end_time:
             part = candidate
             break
 
     if part is None:
-        part = Part(start_time=start_time, end_time=end_time)
+        part = Part(
+            id=new_part_id(),
+            tape_id=tape.id,
+            start_time=start_time,
+            end_time=end_time,
+        )
 
     with new_chat():
         if context_parts:
@@ -221,4 +233,3 @@ def parse_transcription_xml(xml_text: str) -> list[Utterance]:
         logger.error("Failed to parse XML: %s", exc)
         logger.error("XML content was: %s", xml_text)
         return []
-

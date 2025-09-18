@@ -25,11 +25,15 @@ from tagflow import (
 from slop import app, gemini, rest
 from slop.gemini import GeminiError, ModelOverloadedError
 from slop.models import (
-    Tape,
     Part,
+    Tape,
     Utterance,
     get_tape,
+    list_parts_for_tape,
     list_tapes,
+    new_part_id,
+    new_tape_id,
+    save_part,
     save_tape,
 )
 from slop.parameter import Parameter
@@ -99,6 +103,15 @@ def load_tape_or_error(tape_id: str) -> Tape:
         raise HTTPException(status_code=404, detail="Tape not found") from exc
     except ModelDecodeError as exc:
         raise HTTPException(status_code=500, detail="Tape data invalid") from exc
+
+
+def load_parts_or_error(tape: Tape) -> list[Part]:
+    """Return ordered parts for ``tape`` or raise HTTP errors."""
+
+    try:
+        return list_parts_for_tape(tape)
+    except ModelNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Part not found") from exc
 
 
 async def _read_payload() -> dict[str, Any]:
@@ -312,7 +325,7 @@ async def _create_tape_from_upload(audio: UploadFile) -> Tape:
             audio_hash = save_blob(processed_audio, "audio/ogg")
 
             # Create tape record
-            tape_id = str(len(list_tapes()) + 1)
+            tape_id = new_tape_id()
             tape = Tape(
                 id=tape_id,
                 filename=upload_name,
@@ -661,6 +674,8 @@ def tape_header(title: str, tape_id: str):
 
 
 def render_part(tape_id: str, part_index: int, part: Part) -> None:
+    part_path = f"/parts/{part.id}"
+
     with tag.div(
         id=f"part-{part_index}",
         classes="flex flex-col gap-2 p-4 py-2 border-t-4 border-gray-400 mt-4",
@@ -669,21 +684,19 @@ def render_part(tape_id: str, part_index: int, part: Part) -> None:
             if part.audio_hash:
                 audio_player(f"/audio/{part.audio_hash}")
 
-            # Add edit button
             button_view(
                 "Edit",
                 **{
-                    "hx-get": f"/tapes/{tape_id}/parts/{part_index}/edit",
+                    "hx-get": f"{part_path}/edit",
                     "hx-target": f"#part-content-{part_index}",
                     "hx-swap": "innerHTML",
                 },
             )
 
-            # Add retranscribe button
             button_view(
                 "Retranscribe",
                 **{
-                    "hx-post": f"/tapes/{tape_id}/parts/{part_index}/jobs",
+                    "hx-post": f"{part_path}/jobs",
                     "hx-target": f"#part-{part_index}",
                     "hx-swap": "outerHTML",
                     "hx-include": "#model-selector",
@@ -691,11 +704,10 @@ def render_part(tape_id: str, part_index: int, part: Part) -> None:
                 },
             )
 
-            # Add improve speakers button
             button_view(
                 "Improve Speakers",
                 **{
-                    "hx-post": f"/tapes/{tape_id}/parts/{part_index}/jobs",
+                    "hx-post": f"{part_path}/jobs",
                     "hx-target": f"#part-{part_index}",
                     "hx-swap": "outerHTML",
                     "hx-include": "#model-selector",
@@ -703,20 +715,20 @@ def render_part(tape_id: str, part_index: int, part: Part) -> None:
                 },
             )
 
-        # Display each utterance
         with tag.div(id=f"part-content-{part_index}", classes="w-full"):
             with tag.div(classes="flex flex-wrap gap-4"):
                 for i, utterance in enumerate(part.utterances):
-                    render_utterance(tape_id, part_index, i, utterance)
+                    render_utterance(part, part_index, i, utterance)
 
 
 def render_parts_container() -> None:
     tape = app.tape.get()
     tape_id = tape.id
+    parts = load_parts_or_error(tape)
 
     with tag.div(id="parts", classes="flex flex-col gap-2"):
-        if tape.parts:
-            for i, part in enumerate(tape.parts):
+        if parts:
+            for i, part in enumerate(parts):
                 render_part(tape_id, i, part)
 
 
@@ -736,11 +748,11 @@ def view_part():
     render_part(tape_id, part_index, part)
 
 
-def render_utterance(tape_id, part_index, i, utterance):
+def render_utterance(part: Part, part_index: int, i: int, utterance):
     with tag.span(
         **{
             "data-speaker": utterance.speaker,
-            "hx-post": f"/tapes/{tape_id}/parts/{part_index}/jobs",
+            "hx-post": f"/parts/{part.id}/jobs",
             "hx-trigger": "click",
             "hx-vals": f'js:{{"kind": "update_speaker", "utterance": {i}, "speaker": window.keyPressed}}',
             "hx-swap": "outerHTML",
@@ -754,9 +766,8 @@ def render_utterance(tape_id, part_index, i, utterance):
 def edit_part_dialog():
     """Renders the inline edit form for a part."""
     tape = app.tape.get()
-    tape_id = tape.id
-    part_index = app.part_index.get()
     part = app.get_part()
+    part_index = app.part_index.get()
 
     # Convert utterances to text format
     text_content = "\n\n".join(f"{u.speaker}: {u.text}" for u in part.utterances)
@@ -764,7 +775,7 @@ def edit_part_dialog():
     with tag.form(
         classes="space-y-4",
         **{
-            "hx-patch": f"/tapes/{tape_id}/parts/{part_index}",
+            "hx-patch": f"/parts/{part.id}",
             "hx-target": f"#part-content-{part_index}",
             "hx-swap": "innerHTML",
         },
@@ -802,7 +813,7 @@ def edit_part_dialog():
                     type="button",
                     classes="p-2 text-gray-600 hover:text-gray-800",
                     **{
-                        "hx-get": f"/tapes/{tape_id}/parts/{part_index}",
+                        "hx-get": f"/parts/{part.id}",
                         "hx-target": f"#part-{part_index}",
                         "hx-swap": "outerHTML",
                     },
@@ -962,10 +973,11 @@ async def transcribe_next_part(
     tape_id = tape.id
 
     # Get context parts
-    context_parts = []
-    if tape.parts:
-        start_idx = max(0, len(tape.parts) - tape.context_parts)
-        context_parts = tape.parts[start_idx:]
+    existing_parts = load_parts_or_error(tape)
+    context_parts: list[Part] = []
+    if existing_parts:
+        start_idx = max(0, len(existing_parts) - tape.context_parts)
+        context_parts = existing_parts[start_idx:]
 
     # Calculate part times
     start_time = tape.current_position
@@ -999,22 +1011,25 @@ async def transcribe_next_part(
 
         # Create and save the new part
         part = Part(
+            id=new_part_id(),
+            tape_id=tape_id,
             start_time=start_time,
             end_time=end_time,
             audio_hash=part_hash,
             utterances=utterances,
         )
+        save_part(part)
 
         # Advance current position while leaving a 1-second overlap for continuity
         advance_seconds = max(part_seconds - 1, 0)
         tape.current_position = increment_time(start_time, seconds=advance_seconds)
 
-        # Append part to tape and save
-        tape.parts.append(part)
+        # Append part ID to tape and save
+        tape.part_ids.append(part.id)
         save_tape(tape)
 
         # Return the new part as a partial view
-        render_part(tape_id, len(tape.parts) - 1, part)
+        render_part(tape_id, len(tape.part_ids) - 1, part)
 
     except ModelOverloadedError as e:
         with tag.div(
@@ -1048,7 +1063,7 @@ async def transcribe_next_part(
                 text(e.message)
 
 
-async def retranscribe_part():
+async def retranscribe_part(model_name: str | None = None):
     """Retranscribe a specific part using Gemini."""
     tape = app.tape.get()
     tape_id = tape.id
@@ -1056,23 +1071,30 @@ async def retranscribe_part():
     part = app.get_part()
 
     # Get context parts
-    context_parts = []
-    if part_index > 0:
+    all_parts = load_parts_or_error(tape)
+    context_parts: list[Part] = []
+    if part_index > 0 and all_parts:
         start_idx = max(0, part_index - tape.context_parts)
-        context_parts = tape.parts[start_idx:part_index]
+        context_parts = all_parts[start_idx:part_index]
 
-    # Transcribe the part
-    utterances, part_hash = await transcribe_audio_part(
-        tape_id,
-        part.start_time,
-        part.end_time,
-        context_parts,
+    model_context = (
+        gemini.model.using(model_name)
+        if model_name in MODEL_CHOICES and model_name != gemini.model.get()
+        else nullcontext()
     )
+
+    with model_context:
+        utterances, part_hash = await transcribe_audio_part(
+            tape_id,
+            part.start_time,
+            part.end_time,
+            context_parts,
+        )
 
     # Update the part
     part.audio_hash = part_hash
     part.utterances = utterances
-    save_tape(tape)
+    save_part(part)
 
     # Return the updated part view
     render_part(tape_id, part_index, part)
@@ -1086,10 +1108,11 @@ async def improve_part_speakers(hint: str | None = None):
     part = app.get_part()
 
     # Get context parts
-    context_parts = []
-    if part_index > 0:
+    all_parts = load_parts_or_error(tape)
+    context_parts: list[Part] = []
+    if part_index > 0 and all_parts:
         start_idx = max(0, part_index - tape.context_parts)
-        context_parts = tape.parts[start_idx:part_index]
+        context_parts = all_parts[start_idx:part_index]
 
     # Improve speaker identification
     utterances = await improve_speaker_identification_part(
@@ -1102,7 +1125,7 @@ async def improve_part_speakers(hint: str | None = None):
 
     # Update the part
     part.utterances = utterances
-    save_tape(tape)
+    save_part(part)
 
     # Return the updated part view
     render_part(tape_id, part_index, part)
@@ -1152,14 +1175,17 @@ async def get_audio_duration(input_path: Path) -> str:
 def update_part(content: str):
     """Updates a part's utterances from the edit form."""
     tape = app.tape.get()
-    tape_id = tape.id
     part_index = app.part_index.get()
     part = app.get_part()
 
     # Get the last speaker from the previous part if it exists
     last_speaker = None
-    if part_index > 0 and tape.parts[part_index - 1].utterances:
-        last_speaker = tape.parts[part_index - 1].utterances[-1].speaker
+    if part_index > 0:
+        all_parts = load_parts_or_error(tape)
+        if part_index - 1 < len(all_parts):
+            previous = all_parts[part_index - 1]
+            if previous.utterances:
+                last_speaker = previous.utterances[-1].speaker
 
     # Parse the content into utterances
     utterances = []
@@ -1189,12 +1215,12 @@ def update_part(content: str):
 
     # Update the part
     part.utterances = utterances
-    save_tape(tape)
+    save_part(part)
 
     # Return the updated part view
     with tag.div(classes="flex flex-wrap gap-4"):
         for i, utterance in enumerate(part.utterances):
-            render_utterance(tape_id, part_index, i, utterance)
+            render_utterance(part, part_index, i, utterance)
 
 
 def rename_tape(new_name: str) -> None:
@@ -1219,7 +1245,7 @@ def export_tape():
     title.runs[0].font.size = Pt(16)
 
     # Add each part
-    for part in tape.parts:
+    for part in load_parts_or_error(tape):
         # Add timestamp as a subheading
         doc.add_heading(f"{part.start_time} - {part.end_time}", level=2).runs[
             0
@@ -1289,8 +1315,6 @@ async def patch_tape() -> Response:
 
 def update_speaker(utterance_index: int, speaker: str):
     """Updates the speaker for a specific utterance."""
-    tape = app.tape.get()
-    tape_id = tape.id
     part_index = app.part_index.get()
     part = app.get_part()
 
@@ -1307,10 +1331,10 @@ def update_speaker(utterance_index: int, speaker: str):
         speaker_value = f"S{speaker_value}"
 
     utterance.speaker = speaker_value
-    save_tape(tape)
+    save_part(part)
 
     # Return the updated utterance view
-    render_utterance(tape_id, part_index, utterance_index, utterance)
+    render_utterance(part, part_index, utterance_index, utterance)
 
 
 async def tape_jobs() -> Response | None:
