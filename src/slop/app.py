@@ -2,6 +2,10 @@
 
 import inspect
 import logging
+import re
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from re import Match
 from typing import NoReturn, NotRequired, TypedDict
 
 from httpx import AsyncClient
@@ -112,28 +116,6 @@ def load_part_index(idx: str) -> int:
 # ============================================================================
 
 
-def parse_path(path: str) -> tuple[str, ...] | None:
-    """Split a request path into meaningful parts.
-
-    Returns ``None`` when the path contains unsupported constructs such as
-    trailing slashes (other than ``/`` itself) or empty parts, to mirror the
-    404 behaviour of the previous regex-based routing.
-    """
-
-    if path == "/":
-        return ()
-
-    if path.endswith("/"):
-        return None
-
-    stripped = path.lstrip("/")
-    if not stripped:
-        return ()
-
-    parts = tuple(stripped.split("/"))
-    return None if any(part == "" for part in parts) else parts
-
-
 def set_path_params(req: Request, **params) -> None:
     """Populate Starlette-compatible path params for downstream handlers."""
 
@@ -166,90 +148,182 @@ async def call_view(handler, *, form_model=None, extra_kwargs=None):
     return result if result is not None else TagResponse()
 
 
-async def dispatch_part(
+RouteHandler = Callable[[Request, Match[str]], Awaitable[Response]]
+
+
+@dataclass(frozen=True)
+class RouteDef:
+    """Single regex-based route definition."""
+
+    method: str
+    pattern: re.Pattern[str]
+    handler: RouteHandler
+
+
+async def call_with_tape(
     req: Request,
-    method: str,
     tape_id: str,
-    part_idx: str,
-    tail: tuple[str, ...],
+    view,
+    *,
+    form_model=None,
+    extra_kwargs=None,
 ) -> Response:
-    """Route requests that operate on a specific tape part."""
-
-    if not part_idx.isdigit():
-        raise HTTPException(status_code=404, detail="Not found")
-
-    index = load_part_index(part_idx)
-    set_path_params(req, id=tape_id, idx=index)
-
-    with part_index.using(index):
-        match (method, tail):
-            case ("GET", ()):
-                return await call_view(transcribe.view_part)
-            case ("PATCH", ()):
-                return await call_view(
-                    transcribe.update_part,
-                    form_model=ContentForm,
-                )
-            case ("GET", ("edit",)):
-                return await call_view(transcribe.edit_part_dialog)
-            case ("POST", ("jobs",)):
-                return await call_view(transcribe.part_jobs)
-            case (_, ()):
-                method_not_allowed("GET", "PATCH")
-            case (_, ("edit",)):
-                method_not_allowed("GET")
-            case _:
-                raise HTTPException(status_code=404, detail="Not found")
-
-
-async def dispatch_tape(
-    req: Request,
-    method: str,
-    tape_id: str,
-    suffix: tuple[str, ...],
-) -> Response:
-    """Route requests for tape-level operations."""
+    """Load tape context and invoke the given view."""
 
     tape_obj = load_tape(tape_id)
-
     with tape.using(tape_obj):
         set_path_params(req, id=tape_id)
+        return await call_view(
+            view,
+            form_model=form_model,
+            extra_kwargs=extra_kwargs,
+        )
 
-        match (method, suffix):
-            case ("GET", ()):
-                return await call_view(transcribe.view_tape)
-            case ("PATCH", ()):
-                return await call_view(transcribe.patch_tape)
-            case ("GET", ("export",)):
-                return await call_view(transcribe.export_tape)
-            case ("GET", ("media",)):
-                return await call_view(transcribe.get_tape_media)
-            case ("POST", ("jobs",)):
-                return await call_view(transcribe.tape_jobs)
-            case ("GET", ("parts",)):
-                return await call_view(transcribe.list_parts_view)
-            case (method, ("parts", part_idx, *part_tail)) if part_idx.isdigit():
-                return await dispatch_part(
-                    req,
-                    method,
-                    tape_id,
-                    part_idx,
-                    tuple(part_tail),
-                )
-            case (_, ()):
-                method_not_allowed("GET", "PATCH")
-            case (_, ("export",)):
-                method_not_allowed("GET")
-            case (_, ("media",)):
-                method_not_allowed("GET")
-            case (_, ("jobs",)):
-                method_not_allowed("POST")
-            case (_, ("parts",)):
-                method_not_allowed("GET")
-            case (_, ("parts", _, *_)):
-                raise HTTPException(status_code=404, detail="Not found")
-            case _:
-                raise HTTPException(status_code=404, detail="Not found")
+
+async def call_with_part(
+    req: Request,
+    tape_id: str,
+    part_idx: str,
+    view,
+    *,
+    form_model=None,
+    extra_kwargs=None,
+) -> Response:
+    """Load tape and part context before invoking the view."""
+
+    tape_obj = load_tape(tape_id)
+    with tape.using(tape_obj):
+        index = load_part_index(part_idx)
+        set_path_params(req, id=tape_id, idx=index)
+        with part_index.using(index):
+            return await call_view(
+                view,
+                form_model=form_model,
+                extra_kwargs=extra_kwargs,
+            )
+
+
+async def route_home(req: Request, match: Match[str]) -> Response:
+    set_path_params(req)
+    return await call_view(transcribe.home)
+
+
+async def route_list_tapes(req: Request, match: Match[str]) -> Response:
+    set_path_params(req)
+    partial = req.query_params.get("partial") == "list"
+    return await call_view(
+        transcribe.list_tapes_view,
+        extra_kwargs={"partial": partial},
+    )
+
+
+async def route_create_tape(req: Request, match: Match[str]) -> Response:
+    set_path_params(req)
+    return await call_view(
+        transcribe.create_tape,
+        form_model=AudioUploadForm,
+    )
+
+
+async def route_get_audio(req: Request, match: Match[str]) -> Response:
+    hash_ = match.group("hash_")
+    set_path_params(req, hash_=hash_)
+    return await call_view(transcribe.get_audio)
+
+
+async def route_get_tape(req: Request, match: Match[str]) -> Response:
+    return await call_with_tape(req, match.group("tape_id"), transcribe.view_tape)
+
+
+async def route_patch_tape(req: Request, match: Match[str]) -> Response:
+    return await call_with_tape(req, match.group("tape_id"), transcribe.patch_tape)
+
+
+async def route_export_tape(req: Request, match: Match[str]) -> Response:
+    return await call_with_tape(req, match.group("tape_id"), transcribe.export_tape)
+
+
+async def route_media_tape(req: Request, match: Match[str]) -> Response:
+    return await call_with_tape(req, match.group("tape_id"), transcribe.get_tape_media)
+
+
+async def route_tape_jobs(req: Request, match: Match[str]) -> Response:
+    return await call_with_tape(req, match.group("tape_id"), transcribe.tape_jobs)
+
+
+async def route_list_parts(req: Request, match: Match[str]) -> Response:
+    return await call_with_tape(req, match.group("tape_id"), transcribe.list_parts_view)
+
+
+async def route_get_part(req: Request, match: Match[str]) -> Response:
+    return await call_with_part(
+        req,
+        match.group("tape_id"),
+        match.group("idx"),
+        transcribe.view_part,
+    )
+
+
+async def route_patch_part(req: Request, match: Match[str]) -> Response:
+    return await call_with_part(
+        req,
+        match.group("tape_id"),
+        match.group("idx"),
+        transcribe.update_part,
+        form_model=ContentForm,
+    )
+
+
+async def route_edit_part(req: Request, match: Match[str]) -> Response:
+    return await call_with_part(
+        req,
+        match.group("tape_id"),
+        match.group("idx"),
+        transcribe.edit_part_dialog,
+    )
+
+
+async def route_part_jobs(req: Request, match: Match[str]) -> Response:
+    return await call_with_part(
+        req,
+        match.group("tape_id"),
+        match.group("idx"),
+        transcribe.part_jobs,
+    )
+
+
+ROUTES: tuple[RouteDef, ...] = (
+    RouteDef("GET", re.compile(r"^/$"), route_home),
+    RouteDef("GET", re.compile(r"^/tapes$"), route_list_tapes),
+    RouteDef("POST", re.compile(r"^/tapes$"), route_create_tape),
+    RouteDef("GET", re.compile(r"^/audio/(?P<hash_>[^/]+)$"), route_get_audio),
+    RouteDef("GET", re.compile(r"^/tapes/(?P<tape_id>[^/]+)$"), route_get_tape),
+    RouteDef("PATCH", re.compile(r"^/tapes/(?P<tape_id>[^/]+)$"), route_patch_tape),
+    RouteDef("GET", re.compile(r"^/tapes/(?P<tape_id>[^/]+)/export$"), route_export_tape),
+    RouteDef("GET", re.compile(r"^/tapes/(?P<tape_id>[^/]+)/media$"), route_media_tape),
+    RouteDef("POST", re.compile(r"^/tapes/(?P<tape_id>[^/]+)/jobs$"), route_tape_jobs),
+    RouteDef("GET", re.compile(r"^/tapes/(?P<tape_id>[^/]+)/parts$"), route_list_parts),
+    RouteDef(
+        "GET",
+        re.compile(r"^/tapes/(?P<tape_id>[^/]+)/parts/(?P<idx>\d+)$"),
+        route_get_part,
+    ),
+    RouteDef(
+        "PATCH",
+        re.compile(r"^/tapes/(?P<tape_id>[^/]+)/parts/(?P<idx>\d+)$"),
+        route_patch_part,
+    ),
+    RouteDef(
+        "GET",
+        re.compile(r"^/tapes/(?P<tape_id>[^/]+)/parts/(?P<idx>\d+)/edit$"),
+        route_edit_part,
+    ),
+    RouteDef(
+        "POST",
+        re.compile(r"^/tapes/(?P<tape_id>[^/]+)/parts/(?P<idx>\d+)/jobs$"),
+        route_part_jobs,
+    ),
+)
 
 
 async def dispatch_request(req: Request) -> Response:
@@ -262,33 +336,24 @@ async def dispatch_request(req: Request) -> Response:
     path = req.url.path
     set_path_params(req)
 
-    parts = parse_path(path)
-    if parts is None:
-        raise HTTPException(status_code=404, detail="Not found")
+    matches: list[tuple[RouteDef, Match[str]]] = []
+    allowed_methods: set[str] = set()
 
-    match (method, parts):
-        case ("GET", ()):
-            return await call_view(transcribe.home)
-        case ("GET", ("tapes",)):
-            partial = req.query_params.get("partial") == "list"
-            return await call_view(
-                transcribe.list_tapes_view,
-                extra_kwargs={"partial": partial},
-            )
-        case ("POST", ("tapes",)):
-            return await call_view(transcribe.create_tape, form_model=AudioUploadForm)
-        case ("GET", ("audio", hash_)):
-            set_path_params(req, hash_=hash_)
-            return await call_view(transcribe.get_audio)
-        case (method, ("tapes", tape_id, *suffix)):
-            return await dispatch_tape(
-                req,
-                method,
-                tape_id,
-                tuple(suffix),
-            )
-        case _:
-            raise HTTPException(status_code=404, detail="Not found")
+    for route in ROUTES:
+        match = route.pattern.fullmatch(path)
+        if match is None:
+            continue
+        matches.append((route, match))
+        allowed_methods.add(route.method)
+
+    for route, match in matches:
+        if route.method == method:
+            return await route.handler(req, match)
+
+    if allowed_methods:
+        method_not_allowed(*allowed_methods)
+
+    raise HTTPException(status_code=404, detail="Not found")
 
 
 async def handle_request(req: Request) -> Response:
