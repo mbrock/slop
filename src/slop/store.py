@@ -181,6 +181,13 @@ def save(model_instance: T, *, key: str | None = None) -> str:
         raise ValueError("A string key (or model.id) is required to save the model")
 
     database.get().store.set(resolved_key, model_instance.model_dump_json())
+    import rich
+
+    rich.print(
+        f"💾 [green]{type(model_instance).__name__}[/green] [cyan]{resolved_key}[/cyan]",
+        end=" ",
+    )
+    rich.print(model_instance.model_dump())
     return resolved_key
 
 
@@ -194,9 +201,7 @@ def list_models(model: type[T], *, key_prefix: str | None = None) -> list[T]:
         pairs = ((None, raw) for raw in store_obj.values())
     else:
         pairs = (
-            (key, raw)
-            for key, raw in store_obj.items()
-            if key.startswith(key_prefix)
+            (key, raw) for key, raw in store_obj.items() if key.startswith(key_prefix)
         )
 
     for key, raw in pairs:

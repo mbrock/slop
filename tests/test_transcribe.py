@@ -149,6 +149,7 @@ async def test_transcribe_next_part_integration():
     assert response.status_code == 200, response.text
 
     tapes = list_tapes()
+
     tape = next((i for i in tapes if i.id == tape_id), None)
     assert tape is not None
 

@@ -7,14 +7,15 @@ from contextlib import contextmanager, nullcontext
 from io import BytesIO
 from pathlib import Path
 from subprocess import PIPE
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal, TypedDict
 
 import anyio
+import rich
 from docx import Document
 from docx.shared import Pt
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
-from starlette.responses import RedirectResponse, Response, StreamingResponse
+from starlette.responses import Response, StreamingResponse
 from tagflow import (
     attr,
     classes,
@@ -22,7 +23,7 @@ from tagflow import (
     text,
 )
 
-from slop import app, gemini, rest
+from slop import app, gemini
 from slop.gemini import GeminiError, ModelOverloadedError
 from slop.models import (
     Part,
@@ -64,9 +65,7 @@ TranscribePartCallable = Callable[
     Awaitable[tuple[list[Utterance], str]],
 ]
 
-transcribe_part_callable = Parameter[TranscribePartCallable](
-    "app_transcribe_part"
-)
+transcribe_part_callable = Parameter[TranscribePartCallable]("app_transcribe_part")
 
 
 class TapeJobPayload(TypedDict, total=False):
@@ -122,7 +121,9 @@ async def _read_payload() -> dict[str, Any]:
     if "json" in content_type:
         data = await req.json()
         if not isinstance(data, dict):  # pragma: no cover - sanity check
-            raise HTTPException(status_code=400, detail="JSON payload must be an object")
+            raise HTTPException(
+                status_code=400, detail="JSON payload must be an object"
+            )
         return data
 
     form = await req.form()
@@ -221,9 +222,7 @@ def render_tape_list() -> None:
     """Render the tape list content into the current TagFlow document."""
     with tag.div(classes="space-y-4", id="tape-list"):
         for tape in list_tapes():
-            progress = calculate_progress(
-                tape.current_position, tape.duration
-            )
+            progress = calculate_progress(tape.current_position, tape.duration)
             with tag.div(classes="border rounded-lg p-4 hover:bg-gray-50"):
                 with tag.a(
                     href=f"/tapes/{tape.id}",
@@ -765,7 +764,6 @@ def render_utterance(part: Part, part_index: int, i: int, utterance):
 
 def edit_part_dialog():
     """Renders the inline edit form for a part."""
-    tape = app.tape.get()
     part = app.get_part()
     part_index = app.part_index.get()
 
@@ -942,11 +940,10 @@ def _serve_audio_hash(hash_: str) -> Response:
     )
 
 
-def get_audio():
+def get_audio(hash: str) -> Response:
     """Serve audio file by hash with support for range requests."""
 
-    hash_ = app.request.get().path_params["hash_"]
-    return _serve_audio_hash(hash_)
+    return _serve_audio_hash(hash)
 
 
 def get_tape_media() -> Response:
@@ -996,12 +993,13 @@ async def transcribe_next_part(
         else nullcontext()
     )
 
+    rich.print(f"transcribing {tape_id}/{start_time}-{end_time} ({gemini.model.get()})")
+
     try:
         with model_context:
-            transcribe_fn = (
-                transcribe_part_callable.peek() or transcribe_audio_part
-            )
+            transcribe_fn = transcribe_part_callable.peek() or transcribe_audio_part
             # Transcribe the part
+
             utterances, part_hash = await transcribe_fn(
                 tape_id,
                 start_time,
@@ -1032,6 +1030,7 @@ async def transcribe_next_part(
         render_part(tape_id, len(tape.part_ids) - 1, part)
 
     except ModelOverloadedError as e:
+        rich.print(f"[bold yellow]Model overloaded: {e}")
         with tag.div(
             classes="fixed bottom-4 right-4 bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded shadow-lg",
             role="alert",
@@ -1048,6 +1047,7 @@ async def transcribe_next_part(
                 )
 
     except GeminiError as e:
+        rich.print(f"[bold red]Gemini error: {e.message}")
         # Show error toast notification
         with tag.div(
             classes="fixed bottom-4 right-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded shadow-lg",
@@ -1282,9 +1282,7 @@ def update_context_parts(context_parts: int) -> None:
     """Updates the number of context parts to use for transcription."""
     tape = app.tape.get()
 
-    tape.context_parts = max(
-        0, min(5, context_parts)
-    )  # Clamp between 0 and 5
+    tape.context_parts = max(0, min(5, context_parts))  # Clamp between 0 and 5
     save_tape(tape)
 
 
@@ -1341,6 +1339,7 @@ async def tape_jobs() -> Response | None:
     """Fan-in for tape-level job requests."""
 
     payload = await _read_payload()
+
     kind = payload.get("kind")
 
     if kind == "transcribe_next":

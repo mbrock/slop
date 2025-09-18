@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from functools import wraps
-from typing import Any, Awaitable, Callable, Iterable, Sequence, Type, TypeVar
+from typing import Any, Awaitable, Callable, Sequence, Type, TypeVar
 
 from pydantic import ConfigDict, TypeAdapter, ValidationError
 from starlette.exceptions import HTTPException
@@ -31,7 +31,9 @@ def _ensure_arbitrary_types(model: Type[Any]) -> None:
     config = getattr(model, "__pydantic_config__", None)
     if not getattr(config, "arbitrary_types_allowed", False):
         try:
-            setattr(model, "__pydantic_config__", ConfigDict(arbitrary_types_allowed=True))
+            setattr(
+                model, "__pydantic_config__", ConfigDict(arbitrary_types_allowed=True)
+            )
         except (AttributeError, TypeError):
             pass
 
@@ -54,7 +56,9 @@ def _validate(model: Type[T], payload: Any) -> T:
         return _adapter(model).validate_python(payload)
     except ValidationError as exc:
         detail = _format_validation_error(exc)
-        raise HTTPException(status_code=400, detail=f"Validation error: {detail}") from exc
+        raise HTTPException(
+            status_code=400, detail=f"Validation error: {detail}"
+        ) from exc
 
 
 async def parse_body(model: Type[T], *, source: str = "form") -> T:
@@ -71,7 +75,7 @@ async def parse_body(model: Type[T], *, source: str = "form") -> T:
     return _validate(model, payload)
 
 
-async def form(model: Type[T]) -> T:
+async def form[T](model: Type[T]) -> T:
     """Maintain the legacy helper for HTML forms."""
 
     return await parse_body(model, source="form")
@@ -127,7 +131,9 @@ def html(
 ) -> Endpoint:
     from tagflow import TagResponse
 
-    return endpoint(func, body=body, source=source, into=into, default_response=TagResponse)
+    return endpoint(
+        func, body=body, source=source, into=into, default_response=TagResponse
+    )
 
 
 # ============================================================================
@@ -177,7 +183,9 @@ def bind_path(name: str) -> str:
     try:
         return request.get().path_params[name]
     except KeyError as exc:
-        raise HTTPException(status_code=400, detail=f"Missing path parameter '{name}'") from exc
+        raise HTTPException(
+            status_code=400, detail=f"Missing path parameter '{name}'"
+        ) from exc
 
 
 def bind_query(name: str, default: Any | None = None) -> Any:
