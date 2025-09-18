@@ -673,7 +673,7 @@ async def main():
             api_key.using_env("GOOGLE_API_KEY"),
         ):
             file = await upload_file(
-                "media/interview.ogg", display_name="Interview Audio"
+                "media/tape.ogg", display_name="Tape Audio"
             )
             print(f"Uploaded file: {file.name}")
 

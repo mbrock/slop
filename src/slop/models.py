@@ -1,79 +1,84 @@
+"""Domain models for the tape transcription workflow."""
+
+from __future__ import annotations
+
 import os
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from slop.store import find, save
-from slop.store import list_models as store_list_models
+from slop.store import find, list_models as store_list_models, save
 
 
-class PartitionSegment(BaseModel):
-    """A segment of the interview with start and end times."""
+class PartitionPart(BaseModel):
+    """A proposed tape partition returned by pre-processing."""
 
-    start_time: str = Field(description="Start time of the segment (HH:MM:SS)")
-    end_time: str = Field(description="End time of the segment (HH:MM:SS)")
+    start_time: str = Field(description="Start time of the part (HH:MM:SS)")
+    end_time: str = Field(description="End time of the part (HH:MM:SS)")
     phrases: list[str] = Field(
-        description="Some example short phrases from this segment to help orient the user"
+        description="Sample utterances from the part to orient the user"
     )
-    audio_hash: str | None = None  # Hash of the segment's audio
+    audio_hash: str | None = None
 
 
 class Utterance(BaseModel):
-    """A single utterance in the interview."""
+    """A single utterance captured in a tape part."""
 
-    speaker: str = Field(description="Speaker identifier (e.g. 'S1', 'S2')")
+    speaker: str = Field(description="Speaker identifier (e.g. 'S1', 'Moderator')")
     text: str = Field(description="The transcribed text")
-    audio_hash: str | None = None  # Hash of the utterance's audio segment
+    audio_hash: str | None = None
 
 
-class Segment(BaseModel):
-    """A segment of the interview containing utterances."""
+class Part(BaseModel):
+    """A contiguous section of the tape containing utterances."""
 
-    start_time: str = Field(description="Start time of the segment (HH:MM:SS)")
-    end_time: str = Field(description="End time of the segment (HH:MM:SS)")
-    audio_hash: str | None = None  # Hash of the segment's audio
-    utterances: list[Utterance] = []
+    start_time: str = Field(description="Start time of the part (HH:MM:SS)")
+    end_time: str = Field(description="End time of the part (HH:MM:SS)")
+    audio_hash: str | None = None
+    utterances: list[Utterance] = Field(default_factory=list)
 
 
-class Interview(BaseModel):
-    """An interview with its metadata and transcribed segments."""
+class Tape(BaseModel):
+    """A tape with its metadata and transcribed parts."""
 
     id: str
     filename: str
-    audio_hash: str | None = None  # Hash of the processed audio file
+    audio_hash: str | None = None
     duration: str = Field(
         default="00:00:00",
-        description="Total duration of the interview (HH:MM:SS)",
+        description="Total duration of the tape (HH:MM:SS)",
     )
     current_position: str = Field(
         default="00:00:00",
-        description="Current position in the interview (HH:MM:SS)",
+        description="Current position while processing (HH:MM:SS)",
     )
-    context_segments: int = Field(
+    context_parts: int = Field(
         default=1,
-        description="Number of previous segments to include as context for transcription",
+        description="Number of earlier parts to provide as context when transcribing",
     )
-    segments: list[Segment] = []
+    parts: list[Part] = Field(default_factory=list)
 
 
 def get_data_dir() -> Path:
-    """Get the data directory from environment or default."""
+    """Return the path to the data directory."""
+
     return Path(os.getenv("IEVA_DATA", "/data"))
 
 
-def get_interview(interview_id: str) -> Interview:
-    """Compatibility wrapper for loading :class:`Interview` instances."""
+def get_tape(tape_id: str) -> Tape:
+    """Load a tape by ID."""
 
-    return find(Interview, interview_id)
-
-
-def save_interview(interview: Interview) -> str:
-    """Compatibility wrapper for storing :class:`Interview` instances."""
-
-    return save(interview)
+    return find(Tape, tape_id)
 
 
-def list_interviews() -> list[Interview]:
-    """Compatibility wrapper returning every stored interview."""
+def save_tape(tape: Tape) -> str:
+    """Persist a tape and return its identifier."""
 
-    return store_list_models(Interview)
+    return save(tape)
+
+
+def list_tapes() -> list[Tape]:
+    """Return every stored tape."""
+
+    return store_list_models(Tape)
+

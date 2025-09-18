@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import tempfile
@@ -6,6 +7,7 @@ from contextlib import contextmanager, nullcontext
 from io import BytesIO
 from pathlib import Path
 from subprocess import PIPE
+from typing import Any, Literal, NotRequired, TypedDict
 
 import anyio
 from docx import Document
@@ -20,20 +22,20 @@ from tagflow import (
     text,
 )
 
-from slop import app, gemini
+from slop import app, gemini, rest
 from slop.gemini import GeminiError, ModelOverloadedError
 from slop.models import (
-    Interview,
-    Segment,
+    Tape,
+    Part,
     Utterance,
-    get_interview,
-    list_interviews,
-    save_interview,
+    get_tape,
+    list_tapes,
+    save_tape,
 )
 from slop.parameter import Parameter
 from slop.sndprompt import (
-    improve_speaker_identification_segment,
-    transcribe_audio_segment,
+    improve_speaker_identification_part,
+    transcribe_audio_part,
 )
 from slop.store import (
     ModelDecodeError,
@@ -53,36 +55,77 @@ MODEL_CHOICES = [
 ]
 
 
-TranscribeSegmentCallable = Callable[
-    [str, str, str, list[Segment] | None],
+TranscribePartCallable = Callable[
+    [str, str, str, list[Part] | None],
     Awaitable[tuple[list[Utterance], str]],
 ]
 
-transcribe_segment_callable = Parameter[TranscribeSegmentCallable](
-    "app_transcribe_segment"
+transcribe_part_callable = Parameter[TranscribePartCallable](
+    "app_transcribe_part"
 )
+
+
+class TapeJobPayload(TypedDict, total=False):
+    kind: Literal["transcribe_next"]
+    duration_seconds: int | str
+    model_name: str
+
+
+class PartJobPayload(TypedDict, total=False):
+    kind: Literal["retranscribe", "improve_speakers", "update_speaker"]
+    model_name: str
+    hint: str
+    utterance: int | str
+    speaker: str
 
 
 IMPROVE_SPEAKERS_ONCLICK = (
     "const hint = prompt('Enter any hints about the speakers (optional):'); "
     "if (hint === null) { return false; } "
     "const selected = document.querySelector(\"#model-selector input[name='model_name']:checked\"); "
-    "const payload = { hint }; "
+    "const payload = { kind: 'improve_speakers', hint }; "
     "if (selected) { payload.model_name = selected.value; } "
     "this.setAttribute('hx-vals', JSON.stringify(payload)); "
     "return true;"
 )
 
 
-def load_interview_or_error(interview_id: str) -> Interview:
-    """Return the interview or raise an appropriate HTTP error."""
+def load_tape_or_error(tape_id: str) -> Tape:
+    """Return the tape or raise an appropriate HTTP error."""
 
     try:
-        return get_interview(interview_id)
+        return get_tape(tape_id)
     except ModelNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Interview not found") from exc
+        raise HTTPException(status_code=404, detail="Tape not found") from exc
     except ModelDecodeError as exc:
-        raise HTTPException(status_code=500, detail="Interview data invalid") from exc
+        raise HTTPException(status_code=500, detail="Tape data invalid") from exc
+
+
+async def _read_payload() -> dict[str, Any]:
+    """Normalise the incoming request payload to a plain dictionary."""
+
+    req = app.request.get()
+    content_type = req.headers.get("content-type", "")
+    if "json" in content_type:
+        data = await req.json()
+        if not isinstance(data, dict):  # pragma: no cover - sanity check
+            raise HTTPException(status_code=400, detail="JSON payload must be an object")
+        return data
+
+    form = await req.form()
+    return {key: value for key, value in form.items()}
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        value = value.strip()
+        if value.isdigit():
+            return int(value)
+    return None
 
 
 @contextmanager
@@ -161,23 +204,23 @@ def calculate_progress(current: str, total: str) -> int:
     return int((current_secs / total_secs) * 100)
 
 
-def render_interview_list() -> None:
-    """Render the interview list content into the current TagFlow document."""
-    with tag.div(classes="space-y-4", id="interview-list"):
-        for interview in list_interviews():
+def render_tape_list() -> None:
+    """Render the tape list content into the current TagFlow document."""
+    with tag.div(classes="space-y-4", id="tape-list"):
+        for tape in list_tapes():
             progress = calculate_progress(
-                interview.current_position, interview.duration
+                tape.current_position, tape.duration
             )
             with tag.div(classes="border rounded-lg p-4 hover:bg-gray-50"):
                 with tag.a(
-                    href=f"/interview/{interview.id}",
+                    href=f"/tapes/{tape.id}",
                     classes="block",
                 ):
                     with tag.div(classes="flex justify-between items-center mb-2"):
                         with tag.span(classes="font-medium"):
-                            text(interview.filename)
+                            text(tape.filename)
                         with tag.span(classes="text-gray-500 text-sm"):
-                            text(f"{interview.current_position} / {interview.duration}")
+                            text(f"{tape.current_position} / {tape.duration}")
 
                     with tag.div(classes="bg-gray-200 rounded-full h-2"):
                         with tag.div(
@@ -189,13 +232,13 @@ def render_interview_list() -> None:
 
 def render_home_content() -> None:
     """Render the shared home-page content."""
-    breadcrumb({"Ieva's Interviews": "#"})
+    breadcrumb({"Ieva's Tapes": "#"})
     with tag.div(classes="max-w-4xl mx-auto p-4"):
         with tag.div(classes="mb-8"):
             # with tag.h1(classes="text-2xl font-bold mb-4"):
-            #     text("Ieva's Interviews")
+            #     text("Ieva's Tapes")
 
-            render_interview_list()
+            render_tape_list()
 
         with tag.div(classes="prose mx-auto"):
             upload_area(target="main")
@@ -205,6 +248,15 @@ def home():
     """Render the full home page layout with the upload area."""
     with layout("Home"):
         render_home_content()
+
+
+def list_tapes_view(partial: bool = False) -> None:
+    """Return either the full home view or just the list partial."""
+
+    if partial:
+        render_tape_list()
+    else:
+        home()
 
 
 async def process_audio(input_path: Path) -> bytes:
@@ -239,14 +291,8 @@ async def process_audio(input_path: Path) -> bytes:
     return process.stdout
 
 
-async def upload_audio(audio: UploadFile):
-    """
-    Endpoint to handle file upload:
-    1. Saves the file temporarily
-    2. Processes and stores the audio in BlobStore
-    3. Creates an Interview record
-    4. Redirects to the interview page
-    """
+async def _create_tape_from_upload(audio: UploadFile) -> Tape:
+    """Persist an uploaded audio file and return the stored tape."""
     upload_name = audio.filename or "upload.ogg"
 
     with tempfile.NamedTemporaryFile(
@@ -265,19 +311,32 @@ async def upload_audio(audio: UploadFile):
             processed_audio = await process_audio(tmp_path)
             audio_hash = save_blob(processed_audio, "audio/ogg")
 
-            # Create interview record
-            interview_id = str(len(list_interviews()) + 1)
-            interview = Interview(
-                id=interview_id,
+            # Create tape record
+            tape_id = str(len(list_tapes()) + 1)
+            tape = Tape(
+                id=tape_id,
                 filename=upload_name,
                 audio_hash=audio_hash,
                 duration=duration,
             )
-            save_interview(interview)
+            save_tape(tape)
         finally:
             tmp_path.unlink()
 
-    render_home_content()
+    return tape
+
+
+async def create_tape(audio: UploadFile) -> Response:
+    """Handle a tape upload and respond with its identifier."""
+
+    tape = await _create_tape_from_upload(audio)
+    payload = json.dumps({"id": tape.id})
+    return Response(
+        content=payload,
+        media_type="application/json",
+        status_code=201,
+        headers={"HX-Redirect": f"/tapes/{tape.id}"},
+    )
 
 
 def svg_icons():
@@ -533,13 +592,13 @@ def button_view(label: str, href: str | None = None, type: str = "button", **att
             text(label)
 
 
-def interview_header(title: str, interview_id: str):
-    """Renders the interview header with title and action buttons."""
-    interview = load_interview_or_error(interview_id)
-    context_segments_value = str(interview.context_segments)
+def tape_header(title: str, tape_id: str):
+    """Renders the tape header with title and action buttons."""
+    tape = load_tape_or_error(tape_id)
+    context_parts_value = str(tape.context_parts)
 
     with tag.div():
-        breadcrumb({"Ieva's Interviews": "/", title: "#"})
+        breadcrumb({"Ieva's Tapes": "/", title: "#"})
         with tag.div(
             classes="mt-2 md:flex md:items-center md:justify-between px-4 py-2"
         ):
@@ -549,25 +608,23 @@ def interview_header(title: str, interview_id: str):
                 ):
                     text(title)
             with tag.div(classes="mt-4 flex shrink-0 gap-4 md:ml-4 md:mt-0"):
-                # Context segments control
+                # Context parts control
                 with tag.form(
-                    action=f"/interview/{interview_id}/context-segments",
-                    method="post",
                     classes="flex items-center gap-2",
+                    **{"hx-patch": f"/tapes/{tape_id}", "hx-swap": "none"},
                 ):
                     with tag.label(classes="text-sm text-gray-600"):
-                        text("Context segments:")
+                        text("Context parts:")
                     with tag.input(
                         type="number",
-                        name="context_segments",
+                        name="context_parts",
                         min="0",
                         max="5",
-                        value=context_segments_value,
+                        value=context_parts_value,
                         classes="w-16 px-2 py-1 text-sm border rounded",
                         **{
-                            "hx-post": f"/interview/{interview_id}/context-segments",
                             "hx-trigger": "change",
-                            "hx-swap": "none",
+                            "hx-vals": "js:{context_parts: parseInt(this.value, 10)}",
                         },
                     ):
                         pass
@@ -594,31 +651,30 @@ def interview_header(title: str, interview_id: str):
                                     text(model)
 
                 with tag.form(
-                    action=f"/interview/{interview_id}/rename",
-                    method="post",
                     onsubmit="const name = prompt('New name:', this.querySelector('input').value); if (!name) return false; this.querySelector('input').value = name;",
+                    **{"hx-patch": f"/tapes/{tape_id}", "hx-swap": "none"},
                 ):
-                    with tag.input(type="hidden", name="new_name", value=title):
+                    with tag.input(type="hidden", name="name", value=title):
                         pass
                     button_view("Rename", type="submit")
-                button_view("Export DOCX", href=f"/interview/{interview_id}/export")
+                button_view("Export DOCX", href=f"/tapes/{tape_id}/export")
 
 
-def render_segment(interview_id: str, segment_index: int, segment: Segment) -> None:
+def render_part(tape_id: str, part_index: int, part: Part) -> None:
     with tag.div(
-        id=f"segment-{segment_index}",
+        id=f"part-{part_index}",
         classes="flex flex-col gap-2 p-4 py-2 border-t-4 border-gray-400 mt-4",
     ):
         with tag.div(classes="flex items-center gap-2"):
-            if segment.audio_hash:
-                audio_player(f"/audio/{segment.audio_hash}")
+            if part.audio_hash:
+                audio_player(f"/audio/{part.audio_hash}")
 
             # Add edit button
             button_view(
                 "Edit",
                 **{
-                    "hx-get": f"/interview/{interview_id}/segment/{segment_index}/edit",
-                    "hx-target": f"#segment-content-{segment_index}",
+                    "hx-get": f"/tapes/{tape_id}/parts/{part_index}/edit",
+                    "hx-target": f"#part-content-{part_index}",
                     "hx-swap": "innerHTML",
                 },
             )
@@ -627,10 +683,11 @@ def render_segment(interview_id: str, segment_index: int, segment: Segment) -> N
             button_view(
                 "Retranscribe",
                 **{
-                    "hx-post": f"/interview/{interview_id}/segment/{segment_index}/retranscribe",
-                    "hx-target": f"#segment-{segment_index}",
+                    "hx-post": f"/tapes/{tape_id}/parts/{part_index}/jobs",
+                    "hx-target": f"#part-{part_index}",
                     "hx-swap": "outerHTML",
                     "hx-include": "#model-selector",
+                    "hx-vals": '{"kind": "retranscribe"}',
                 },
             )
 
@@ -638,59 +695,77 @@ def render_segment(interview_id: str, segment_index: int, segment: Segment) -> N
             button_view(
                 "Improve Speakers",
                 **{
-                    "hx-post": f"/interview/{interview_id}/segment/{segment_index}/improve-speakers",
-                    "hx-target": f"#segment-{segment_index}",
+                    "hx-post": f"/tapes/{tape_id}/parts/{part_index}/jobs",
+                    "hx-target": f"#part-{part_index}",
                     "hx-swap": "outerHTML",
+                    "hx-include": "#model-selector",
                     "onclick": IMPROVE_SPEAKERS_ONCLICK,
                 },
             )
 
         # Display each utterance
-        with tag.div(id=f"segment-content-{segment_index}", classes="w-full"):
+        with tag.div(id=f"part-content-{part_index}", classes="w-full"):
             with tag.div(classes="flex flex-wrap gap-4"):
-                for i, utterance in enumerate(segment.utterances):
-                    render_utterance(interview_id, segment_index, i, utterance)
+                for i, utterance in enumerate(part.utterances):
+                    render_utterance(tape_id, part_index, i, utterance)
 
 
-def view_segment():
-    """Renders a single segment as a partial view."""
-    interview = app.interview.get()
-    interview_id = interview.id
-    segment_index = app.segment_index.get()
-    segment = app.get_segment()
+def render_parts_container() -> None:
+    tape = app.tape.get()
+    tape_id = tape.id
 
-    render_segment(interview_id, segment_index, segment)
+    with tag.div(id="parts", classes="flex flex-col gap-2"):
+        if tape.parts:
+            for i, part in enumerate(tape.parts):
+                render_part(tape_id, i, part)
 
 
-def render_utterance(interview_id, segment_index, i, utterance):
+def list_parts_view() -> None:
+    """HTMX partial rendering the full parts container."""
+
+    render_parts_container()
+
+
+def view_part():
+    """Renders a single part as a partial view."""
+    tape = app.tape.get()
+    tape_id = tape.id
+    part_index = app.part_index.get()
+    part = app.get_part()
+
+    render_part(tape_id, part_index, part)
+
+
+def render_utterance(tape_id, part_index, i, utterance):
     with tag.span(
         **{
             "data-speaker": utterance.speaker,
-            "hx-post": f"/interview/{interview_id}/segment/{segment_index}/update-speaker",
+            "hx-post": f"/tapes/{tape_id}/parts/{part_index}/jobs",
             "hx-trigger": "click",
-            "hx-vals": f'js:{{"utterance_index": {i}, "key": window.keyPressed}}',
+            "hx-vals": f'js:{{"kind": "update_speaker", "utterance": {i}, "speaker": window.keyPressed}}',
             "hx-swap": "outerHTML",
+            "onclick": "if (!window.keyPressed) { return false; }",
         }
     ):
         classes(speaker_classes(utterance.speaker), "hover:underline")
         text(utterance.text)
 
 
-def edit_segment_dialog():
-    """Renders the inline edit form for a segment."""
-    interview = app.interview.get()
-    interview_id = interview.id
-    segment_index = app.segment_index.get()
-    segment = app.get_segment()
+def edit_part_dialog():
+    """Renders the inline edit form for a part."""
+    tape = app.tape.get()
+    tape_id = tape.id
+    part_index = app.part_index.get()
+    part = app.get_part()
 
     # Convert utterances to text format
-    text_content = "\n\n".join(f"{u.speaker}: {u.text}" for u in segment.utterances)
+    text_content = "\n\n".join(f"{u.speaker}: {u.text}" for u in part.utterances)
 
     with tag.form(
         classes="space-y-4",
         **{
-            "hx-put": f"/interview/{interview_id}/segment/{segment_index}",
-            "hx-target": f"#segment-content-{segment_index}",
+            "hx-patch": f"/tapes/{tape_id}/parts/{part_index}",
+            "hx-target": f"#part-content-{part_index}",
             "hx-swap": "innerHTML",
         },
     ):
@@ -727,8 +802,8 @@ def edit_segment_dialog():
                     type="button",
                     classes="p-2 text-gray-600 hover:text-gray-800",
                     **{
-                        "hx-get": f"/interview/{interview_id}/segment/{segment_index}",
-                        "hx-target": f"#segment-{segment_index}",
+                        "hx-get": f"/tapes/{tape_id}/parts/{part_index}",
+                        "hx-target": f"#part-{part_index}",
                         "hx-swap": "outerHTML",
                     },
                 ):
@@ -750,22 +825,19 @@ def edit_segment_dialog():
                             pass
 
 
-def view_interview():
+def view_tape():
     """
-    Renders the interview page, showing the audio player and segments.
+    Renders the tape page, showing the audio player and parts.
     """
-    interview = app.interview.get()
-    interview_id = interview.id
-    default_segment_length = str(app.segment_duration_seconds.get())
+    tape = app.tape.get()
+    tape_id = tape.id
+    default_part_length = str(app.part_duration_seconds.get())
 
-    with layout(f"Interview - {interview.filename}"):
+    with layout(f"Tape - {tape.filename}"):
         with tag.div(classes="prose mx-auto"):
-            interview_header(interview.filename, interview.id)
+            tape_header(tape.filename, tape.id)
 
-            with tag.div(id="segments", classes="flex flex-col gap-2"):
-                if interview.segments:
-                    for i, segment in enumerate(interview.segments):
-                        render_segment(interview_id, i, segment)
+            render_parts_container()
 
             # Progress bar and transcribe button section
             with tag.div(classes="border-t-4 border-gray-400 mt-4"):
@@ -773,10 +845,10 @@ def view_interview():
                     # Progress info
                     with tag.div(classes="flex items-center gap-2"):
                         with tag.span(classes="text-gray-500 text-sm"):
-                            text(f"{interview.current_position} / {interview.duration}")
+                            text(f"{tape.current_position} / {tape.duration}")
                         with tag.div(classes="w-48 bg-gray-200 rounded-full h-2"):
                             progress = calculate_progress(
-                                interview.current_position, interview.duration
+                                tape.current_position, tape.duration
                             )
                             with tag.div(
                                 classes="bg-blue-600 rounded-full h-2 transition-all",
@@ -790,14 +862,14 @@ def view_interview():
                             classes="flex items-center gap-2",
                         ):
                             with tag.label(classes="text-sm text-gray-600"):
-                                text("Segment length (s):")
+                                text("Part length (s):")
                             with tag.input(
                                 type="number",
                                 name="duration_seconds",
                                 min="5",
                                 max="600",
                                 step="5",
-                                value=default_segment_length,
+                                value=default_part_length,
                                 classes="w-20 px-2 py-1 text-sm border rounded",
                             ):
                                 pass
@@ -806,20 +878,17 @@ def view_interview():
                         button_view(
                             "Transcribe more",
                             **{
-                                "hx-post": f"/interview/{interview_id}/transcribe-next",
-                                "hx-target": "#segments",
+                                "hx-post": f"/tapes/{tape_id}/jobs",
+                                "hx-target": "#parts",
                                 "hx-swap": "beforeend",
                                 "hx-include": "#model-selector, #transcribe-options",
+                                "hx-vals": '{"kind": "transcribe_next"}',
                             },
                         )
 
 
-def get_audio():
-    """
-    Serve audio file by hash with support for range requests.
-    """
+def _serve_audio_hash(hash_: str) -> Response:
     req = app.request.get()
-    hash_ = req.path_params["hash_"]
     range_header = req.headers.get("range")
 
     try:
@@ -828,9 +897,7 @@ def get_audio():
         raise HTTPException(status_code=404, detail="Audio not found")
     file_size = len(data)
 
-    # Parse range header
     if not range_header:
-        # No range requested, return full file
         return Response(
             content=data,
             media_type=mime_type,
@@ -838,7 +905,6 @@ def get_audio():
         )
 
     try:
-        # Expected format: "bytes=start-end"
         range_str = range_header.replace("bytes=", "")
         start_str, end_str = range_str.split("-")
         start = int(start_str) if start_str else 0
@@ -846,7 +912,6 @@ def get_audio():
     except ValueError:
         raise HTTPException(status_code=416, detail="Invalid range header")
 
-    # Validate range
     if start >= file_size or end >= file_size or start > end:
         raise HTTPException(
             status_code=416, detail=f"Range not satisfiable. File size: {file_size}"
@@ -866,33 +931,50 @@ def get_audio():
     )
 
 
-async def transcribe_next_segment(
+def get_audio():
+    """Serve audio file by hash with support for range requests."""
+
+    hash_ = app.request.get().path_params["hash_"]
+    return _serve_audio_hash(hash_)
+
+
+def get_tape_media() -> Response:
+    """Return the canonical audio for the current tape."""
+
+    tape = app.tape.get()
+    if not tape.audio_hash:
+        raise HTTPException(status_code=404, detail="Tape has no audio")
+
+    return _serve_audio_hash(tape.audio_hash)
+
+
+async def transcribe_next_part(
     duration_seconds: int | None = None,
     model_name: str | None = None,
 ):
     """
-    Transcribe the next audio segment for the given interview.
+    Transcribe the next audio part for the given tape.
 
-    Optional form fields allow callers to override the segment duration (in
+    Optional form fields allow callers to override the part duration (in
     seconds) and select a Gemini model for this request.
     """
-    interview = app.interview.get()
-    interview_id = interview.id
+    tape = app.tape.get()
+    tape_id = tape.id
 
-    # Get context segments
-    context_segments = []
-    if interview.segments:
-        start_idx = max(0, len(interview.segments) - interview.context_segments)
-        context_segments = interview.segments[start_idx:]
+    # Get context parts
+    context_parts = []
+    if tape.parts:
+        start_idx = max(0, len(tape.parts) - tape.context_parts)
+        context_parts = tape.parts[start_idx:]
 
-    # Calculate segment times
-    start_time = interview.current_position
-    base_duration = app.segment_duration_seconds.get()
+    # Calculate part times
+    start_time = tape.current_position
+    base_duration = app.part_duration_seconds.get()
     requested_seconds = (
         duration_seconds if duration_seconds is not None else base_duration
     )
-    segment_seconds = max(1, min(requested_seconds, 15 * 60))
-    end_time = increment_time(start_time, seconds=segment_seconds)
+    part_seconds = max(1, min(requested_seconds, 15 * 60))
+    end_time = increment_time(start_time, seconds=part_seconds)
 
     # Optionally switch the Gemini model just for this request
     chosen_model = model_name if model_name in MODEL_CHOICES else None
@@ -905,34 +987,34 @@ async def transcribe_next_segment(
     try:
         with model_context:
             transcribe_fn = (
-                transcribe_segment_callable.peek() or transcribe_audio_segment
+                transcribe_part_callable.peek() or transcribe_audio_part
             )
-            # Transcribe the segment
-            utterances, segment_hash = await transcribe_fn(
-                interview_id,
+            # Transcribe the part
+            utterances, part_hash = await transcribe_fn(
+                tape_id,
                 start_time,
                 end_time,
-                context_segments,
+                context_parts,
             )
 
-        # Create and save the new segment
-        segment = Segment(
+        # Create and save the new part
+        part = Part(
             start_time=start_time,
             end_time=end_time,
-            audio_hash=segment_hash,
+            audio_hash=part_hash,
             utterances=utterances,
         )
 
         # Advance current position while leaving a 1-second overlap for continuity
-        advance_seconds = max(segment_seconds - 1, 0)
-        interview.current_position = increment_time(start_time, seconds=advance_seconds)
+        advance_seconds = max(part_seconds - 1, 0)
+        tape.current_position = increment_time(start_time, seconds=advance_seconds)
 
-        # Append segment to interview and save
-        interview.segments.append(segment)
-        save_interview(interview)
+        # Append part to tape and save
+        tape.parts.append(part)
+        save_tape(tape)
 
-        # Return the new segment as a partial view
-        render_segment(interview_id, len(interview.segments) - 1, segment)
+        # Return the new part as a partial view
+        render_part(tape_id, len(tape.parts) - 1, part)
 
     except ModelOverloadedError as e:
         with tag.div(
@@ -966,64 +1048,64 @@ async def transcribe_next_segment(
                 text(e.message)
 
 
-async def retranscribe_segment():
-    """Retranscribe a specific segment using Gemini."""
-    interview = app.interview.get()
-    interview_id = interview.id
-    segment_index = app.segment_index.get()
-    segment = app.get_segment()
+async def retranscribe_part():
+    """Retranscribe a specific part using Gemini."""
+    tape = app.tape.get()
+    tape_id = tape.id
+    part_index = app.part_index.get()
+    part = app.get_part()
 
-    # Get context segments
-    context_segments = []
-    if segment_index > 0:
-        start_idx = max(0, segment_index - interview.context_segments)
-        context_segments = interview.segments[start_idx:segment_index]
+    # Get context parts
+    context_parts = []
+    if part_index > 0:
+        start_idx = max(0, part_index - tape.context_parts)
+        context_parts = tape.parts[start_idx:part_index]
 
-    # Transcribe the segment
-    utterances, segment_hash = await transcribe_audio_segment(
-        interview_id,
-        segment.start_time,
-        segment.end_time,
-        context_segments,
+    # Transcribe the part
+    utterances, part_hash = await transcribe_audio_part(
+        tape_id,
+        part.start_time,
+        part.end_time,
+        context_parts,
     )
 
-    # Update the segment
-    segment.audio_hash = segment_hash
-    segment.utterances = utterances
-    save_interview(interview)
+    # Update the part
+    part.audio_hash = part_hash
+    part.utterances = utterances
+    save_tape(tape)
 
-    # Return the updated segment view
-    render_segment(interview_id, segment_index, segment)
+    # Return the updated part view
+    render_part(tape_id, part_index, part)
 
 
-async def improve_speaker_identification(hint: str | None = None):
-    """Improve speaker identification for a specific segment using Gemini."""
-    interview = app.interview.get()
-    interview_id = interview.id
-    segment_index = app.segment_index.get()
-    segment = app.get_segment()
+async def improve_part_speakers(hint: str | None = None):
+    """Improve speaker identification for a specific part using Gemini."""
+    tape = app.tape.get()
+    tape_id = tape.id
+    part_index = app.part_index.get()
+    part = app.get_part()
 
-    # Get context segments
-    context_segments = []
-    if segment_index > 0:
-        start_idx = max(0, segment_index - interview.context_segments)
-        context_segments = interview.segments[start_idx:segment_index]
+    # Get context parts
+    context_parts = []
+    if part_index > 0:
+        start_idx = max(0, part_index - tape.context_parts)
+        context_parts = tape.parts[start_idx:part_index]
 
     # Improve speaker identification
-    utterances = await improve_speaker_identification_segment(
-        interview,
-        segment,
-        segment.utterances,
-        context_segments,
+    utterances = await improve_speaker_identification_part(
+        tape,
+        part,
+        part.utterances,
+        context_parts,
         hint,
     )
 
-    # Update the segment
-    segment.utterances = utterances
-    save_interview(interview)
+    # Update the part
+    part.utterances = utterances
+    save_tape(tape)
 
-    # Return the updated segment view
-    render_segment(interview_id, segment_index, segment)
+    # Return the updated part view
+    render_part(tape_id, part_index, part)
 
 
 def increment_time(time_str: str, seconds: int) -> str:
@@ -1067,17 +1149,17 @@ async def get_audio_duration(input_path: Path) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def update_segment(content: str):
-    """Updates a segment's utterances from the edit form."""
-    interview = app.interview.get()
-    interview_id = interview.id
-    segment_index = app.segment_index.get()
-    segment = app.get_segment()
+def update_part(content: str):
+    """Updates a part's utterances from the edit form."""
+    tape = app.tape.get()
+    tape_id = tape.id
+    part_index = app.part_index.get()
+    part = app.get_part()
 
-    # Get the last speaker from the previous segment if it exists
+    # Get the last speaker from the previous part if it exists
     last_speaker = None
-    if segment_index > 0 and interview.segments[segment_index - 1].utterances:
-        last_speaker = interview.segments[segment_index - 1].utterances[-1].speaker
+    if part_index > 0 and tape.parts[part_index - 1].utterances:
+        last_speaker = tape.parts[part_index - 1].utterances[-1].speaker
 
     # Parse the content into utterances
     utterances = []
@@ -1105,49 +1187,46 @@ def update_segment(content: str):
                 )
             )
 
-    # Update the segment
-    segment.utterances = utterances
-    save_interview(interview)
+    # Update the part
+    part.utterances = utterances
+    save_tape(tape)
 
-    # Return the updated segment view
+    # Return the updated part view
     with tag.div(classes="flex flex-wrap gap-4"):
-        for i, utterance in enumerate(segment.utterances):
-            render_utterance(interview_id, segment_index, i, utterance)
+        for i, utterance in enumerate(part.utterances):
+            render_utterance(tape_id, part_index, i, utterance)
 
 
-def rename_interview(new_name: str) -> RedirectResponse:
-    """Processes the interview rename."""
-    interview = app.interview.get()
-    interview_id = interview.id
+def rename_tape(new_name: str) -> None:
+    """Update the tape's display name."""
+    tape = app.tape.get()
     if not new_name:
         raise HTTPException(status_code=400, detail="New name required")
 
-    interview.filename = new_name
-    save_interview(interview)
-
-    return RedirectResponse(url=f"/interview/{interview_id}", status_code=303)
+    tape.filename = new_name
+    save_tape(tape)
 
 
-def export_interview():
-    """Export the interview as a DOCX file."""
-    interview = app.interview.get()
+def export_tape():
+    """Export the tape as a DOCX file."""
+    tape = app.tape.get()
 
     # Create a new document
     doc = Document()
 
     # Add title
-    title = doc.add_heading(interview.filename, level=1)
+    title = doc.add_heading(tape.filename, level=1)
     title.runs[0].font.size = Pt(16)
 
-    # Add each segment
-    for segment in interview.segments:
+    # Add each part
+    for part in tape.parts:
         # Add timestamp as a subheading
-        doc.add_heading(f"{segment.start_time} - {segment.end_time}", level=2).runs[
+        doc.add_heading(f"{part.start_time} - {part.end_time}", level=2).runs[
             0
         ].font.size = Pt(12)
 
         # Add utterances
-        for utterance in segment.utterances:
+        for utterance in part.utterances:
             p = doc.add_paragraph()
             speaker_run = p.add_run(f"{utterance.speaker}: ")
             speaker_run.bold = True if utterance.speaker == "S1" else False
@@ -1161,7 +1240,7 @@ def export_interview():
 
     # Return as downloadable file
     # Normalize filename: replace spaces with underscores and remove/replace any problematic characters
-    safe_filename = re.sub(r"[^\w\-\.]", "_", interview.filename.replace(" ", "_"))
+    safe_filename = re.sub(r"[^\w\-\.]", "_", tape.filename.replace(" ", "_"))
     # Ensure ASCII encoding for Content-Disposition header
     encoded_filename = safe_filename.encode("ascii", "ignore").decode("ascii")
     filename = f"{encoded_filename}.docx"
@@ -1173,34 +1252,113 @@ def export_interview():
     )
 
 
-def update_context_segments(context_segments: int) -> Response:
-    """Updates the number of context segments to use for transcription."""
-    interview = app.interview.get()
+def update_context_parts(context_parts: int) -> None:
+    """Updates the number of context parts to use for transcription."""
+    tape = app.tape.get()
 
-    interview.context_segments = max(
-        0, min(5, context_segments)
+    tape.context_parts = max(
+        0, min(5, context_parts)
     )  # Clamp between 0 and 5
-    save_interview(interview)
-
-    return Response(status_code=204)  # No content response
+    save_tape(tape)
 
 
-def update_speaker(utterance_index: int, key: str):
+async def patch_tape() -> Response:
+    """Handle a partial update to the tape resource."""
+
+    payload = await _read_payload()
+    updated = False
+
+    if (name := payload.get("name")) is not None:
+        rename_tape(str(name))
+        updated = True
+
+    if "context_parts" in payload:
+        context_value = _coerce_int(payload.get("context_parts"))
+        if context_value is None:
+            raise HTTPException(
+                status_code=400, detail="context_parts must be an integer"
+            )
+        update_context_parts(context_value)
+        updated = True
+
+    if not updated:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+
+    return Response(status_code=204)
+
+
+def update_speaker(utterance_index: int, speaker: str):
     """Updates the speaker for a specific utterance."""
-    interview = app.interview.get()
-    interview_id = interview.id
-    segment_index = app.segment_index.get()
-    segment = app.get_segment()
+    tape = app.tape.get()
+    tape_id = tape.id
+    part_index = app.part_index.get()
+    part = app.get_part()
 
     try:
-        utterance = segment.utterances[utterance_index]
+        utterance = part.utterances[utterance_index]
     except IndexError:
         raise HTTPException(status_code=404, detail="Utterance not found")
 
-    # Update speaker if key is a digit
-    if key.isdigit():
-        utterance.speaker = f"S{key}"
-        save_interview(interview)
+    speaker_value = speaker.strip()
+    if not speaker_value:
+        raise HTTPException(status_code=400, detail="Speaker is required")
+
+    if speaker_value.isdigit():
+        speaker_value = f"S{speaker_value}"
+
+    utterance.speaker = speaker_value
+    save_tape(tape)
 
     # Return the updated utterance view
-    render_utterance(interview_id, segment_index, utterance_index, utterance)
+    render_utterance(tape_id, part_index, utterance_index, utterance)
+
+
+async def tape_jobs() -> Response | None:
+    """Fan-in for tape-level job requests."""
+
+    payload = await _read_payload()
+    kind = payload.get("kind")
+
+    if kind == "transcribe_next":
+        duration = _coerce_int(payload.get("duration_seconds"))
+        model_name = payload.get("model_name")
+        return await transcribe_next_part(
+            duration_seconds=duration,
+            model_name=model_name if isinstance(model_name, str) else None,
+        )
+
+    raise HTTPException(status_code=400, detail="Unsupported job kind")
+
+
+async def part_jobs() -> Response | None:
+    """Handle part-specific job invocations."""
+
+    payload = await _read_payload()
+    kind = payload.get("kind")
+
+    if kind == "retranscribe":
+        model_name = payload.get("model_name")
+        return await retranscribe_part(
+            model_name=model_name if isinstance(model_name, str) else None
+        )
+
+    if kind == "improve_speakers":
+        hint = payload.get("hint")
+        model_name = payload.get("model_name")
+        return await improve_part_speakers(
+            hint=hint if isinstance(hint, str) else None,
+            model_name=model_name if isinstance(model_name, str) else None,
+        )
+
+    if kind == "update_speaker":
+        utterance = _coerce_int(payload.get("utterance"))
+        speaker = payload.get("speaker")
+        if utterance is None or not isinstance(speaker, str):
+            raise HTTPException(
+                status_code=400,
+                detail="update_speaker requires 'utterance' and 'speaker'",
+            )
+        update_speaker(utterance, speaker)
+        return None
+
+    raise HTTPException(status_code=400, detail="Unsupported job kind")

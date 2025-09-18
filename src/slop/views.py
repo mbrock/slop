@@ -19,7 +19,7 @@ def speaker_classes(speaker: str) -> str:
 
 
 def upload_area(target: str):
-    """Create an inviting upload area for interview files with HTMX upload progress"""
+    """Create an inviting upload area for tape files with HTMX upload progress"""
     with tag.div(
         classes="max-w-md mx-auto",
         id="upload-zone",
@@ -29,7 +29,7 @@ def upload_area(target: str):
             classes="relative",
             **{
                 "hx-encoding": "multipart/form-data",
-                "hx-post": "/upload",
+                "hx-post": "/tapes",
                 "hx-target": target,
                 "hx-trigger": "change from:(find input)",
             },

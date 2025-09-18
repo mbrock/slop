@@ -1,4 +1,4 @@
-"""Slop web application - Interview transcription management system."""
+"""Slop web application - Tape transcription management system."""
 
 import inspect
 import logging
@@ -16,7 +16,7 @@ from tagflow import TagResponse, document
 import slop.gemini as gemini
 import slop.store as store
 from slop import rest, transcribe
-from slop.models import Interview, Segment
+from slop.models import Tape, Part
 from slop.parameter import Parameter
 from slop.store import ModelDecodeError, ModelNotFoundError
 
@@ -41,49 +41,26 @@ class AppParams(TypedDict):
     client: AsyncClient
     google_api_key: str
     gemini_model: str
-    interviews_db_path: str
+    tapes_db_path: str
     blobs_db_path: str
-    segment_duration_seconds: NotRequired[int]
+    part_duration_seconds: NotRequired[int]
 
 
 # Form validation models using TypedDict for clean **kwargs spreading
 class AudioUploadForm(TypedDict):
     audio: UploadFile
 
-
-class HintForm(TypedDict):
-    hint: str | None
-
-
 class ContentForm(TypedDict):
     content: str
-
-
-class RenameForm(TypedDict):
-    new_name: str
-
-
-class ContextSegmentsForm(TypedDict):
-    context_segments: int
-
-
-class UpdateSpeakerForm(TypedDict):
-    utterance_index: int
-    key: str
-
-
-class TranscribeNextForm(TypedDict):
-    duration_seconds: NotRequired[int]
-    model_name: NotRequired[str]
 
 
 # ============================================================================
 # Application-Specific Context Parameters
 # ============================================================================
 
-interview = Parameter[Interview]("app_interview")
-segment_index = Parameter[int]("app_segment_index")
-segment_duration_seconds = Parameter[int]("app_segment_duration")
+tape = Parameter[Tape]("app_tape")
+part_index = Parameter[int]("app_part_index")
+part_duration_seconds = Parameter[int]("app_part_duration")
 
 
 # ============================================================================
@@ -91,18 +68,18 @@ segment_duration_seconds = Parameter[int]("app_segment_duration")
 # ============================================================================
 
 
-def get_segment() -> Segment:
-    """Get the current segment from context.
+def get_part() -> Part:
+    """Get the current part from context.
 
     Raises:
-        HTTPException: If segment index is out of bounds.
+        HTTPException: If part index is out of bounds.
     """
-    interview_obj = interview.get()
-    idx = segment_index.get()
+    tape_obj = tape.get()
+    idx = part_index.get()
     try:
-        return interview_obj.segments[idx]
+        return tape_obj.parts[idx]
     except IndexError:
-        raise HTTPException(status_code=404, detail="Segment not found")
+        raise HTTPException(status_code=404, detail="Part not found")
 
 
 # ============================================================================
@@ -110,23 +87,23 @@ def get_segment() -> Segment:
 # ============================================================================
 
 
-def load_interview(interview_id: str) -> Interview:
-    """Load an interview by ID or raise HTTP error."""
+def load_tape(tape_id: str) -> Tape:
+    """Load an tape by ID or raise HTTP error."""
     try:
-        return store.find(Interview, interview_id)
+        return store.find(Tape, tape_id)
     except ModelNotFoundError:
-        raise HTTPException(status_code=404, detail="Interview not found")
+        raise HTTPException(status_code=404, detail="Tape not found")
     except ModelDecodeError:
-        raise HTTPException(status_code=500, detail="Interview data invalid")
+        raise HTTPException(status_code=500, detail="Tape data invalid")
 
 
-def load_segment_index(idx: str) -> int:
-    """Load and validate segment index."""
+def load_part_index(idx: str) -> int:
+    """Load and validate part index."""
     index = int(idx)
-    # Validate segment exists (requires interview context to be set first)
-    interview_obj = interview.get()
-    if index >= len(interview_obj.segments):
-        raise HTTPException(status_code=404, detail="Segment not found")
+    # Validate part exists (requires tape context to be set first)
+    tape_obj = tape.get()
+    if index >= len(tape_obj.parts):
+        raise HTTPException(status_code=404, detail="Part not found")
     return index
 
 
@@ -136,10 +113,10 @@ def load_segment_index(idx: str) -> int:
 
 
 def parse_path(path: str) -> tuple[str, ...] | None:
-    """Split a request path into meaningful segments.
+    """Split a request path into meaningful parts.
 
     Returns ``None`` when the path contains unsupported constructs such as
-    trailing slashes (other than ``/`` itself) or empty segments, to mirror the
+    trailing slashes (other than ``/`` itself) or empty parts, to mirror the
     404 behaviour of the previous regex-based routing.
     """
 
@@ -189,108 +166,87 @@ async def call_view(handler, *, form_model=None, extra_kwargs=None):
     return result if result is not None else TagResponse()
 
 
-async def dispatch_segment(
+async def dispatch_part(
     req: Request,
     method: str,
-    interview_id: str,
-    segment_idx: str,
+    tape_id: str,
+    part_idx: str,
     tail: tuple[str, ...],
 ) -> Response:
-    """Route requests that operate on a specific interview segment."""
+    """Route requests that operate on a specific tape part."""
 
-    if not segment_idx.isdigit():
+    if not part_idx.isdigit():
         raise HTTPException(status_code=404, detail="Not found")
 
-    index = load_segment_index(segment_idx)
-    set_path_params(req, id=interview_id, idx=index)
+    index = load_part_index(part_idx)
+    set_path_params(req, id=tape_id, idx=index)
 
-    segment_post_routes = {
-        ("retranscribe",): (transcribe.retranscribe_segment, None),
-        ("improve-speakers",): (
-            transcribe.improve_speaker_identification,
-            HintForm,
-        ),
-        ("update-speaker",): (
-            transcribe.update_speaker,
-            UpdateSpeakerForm,
-        ),
-    }
-
-    with segment_index.using(index):
+    with part_index.using(index):
         match (method, tail):
             case ("GET", ()):
-                return await call_view(transcribe.view_segment)
-            case ("PUT", ()):
+                return await call_view(transcribe.view_part)
+            case ("PATCH", ()):
                 return await call_view(
-                    transcribe.update_segment,
+                    transcribe.update_part,
                     form_model=ContentForm,
                 )
             case ("GET", ("edit",)):
-                return await call_view(transcribe.edit_segment_dialog)
-            case ("POST", suffix) if suffix in segment_post_routes:
-                handler, form_model = segment_post_routes[suffix]
-                return await call_view(handler, form_model=form_model)
+                return await call_view(transcribe.edit_part_dialog)
+            case ("POST", ("jobs",)):
+                return await call_view(transcribe.part_jobs)
             case (_, ()):
-                method_not_allowed("GET", "PUT")
+                method_not_allowed("GET", "PATCH")
             case (_, ("edit",)):
                 method_not_allowed("GET")
-            case (_, suffix) if suffix in segment_post_routes:
-                method_not_allowed("POST")
             case _:
                 raise HTTPException(status_code=404, detail="Not found")
 
 
-async def dispatch_interview(
+async def dispatch_tape(
     req: Request,
     method: str,
-    interview_id: str,
+    tape_id: str,
     suffix: tuple[str, ...],
 ) -> Response:
-    """Route requests for interview-level operations."""
+    """Route requests for tape-level operations."""
 
-    interview_obj = load_interview(interview_id)
+    tape_obj = load_tape(tape_id)
 
-    post_routes = {
-        ("transcribe-next",): (
-            transcribe.transcribe_next_segment,
-            TranscribeNextForm,
-        ),
-        ("rename",): (
-            transcribe.rename_interview,
-            RenameForm,
-        ),
-        ("context-segments",): (
-            transcribe.update_context_segments,
-            ContextSegmentsForm,
-        ),
-    }
-
-    with interview.using(interview_obj):
-        set_path_params(req, id=interview_id)
+    with tape.using(tape_obj):
+        set_path_params(req, id=tape_id)
 
         match (method, suffix):
             case ("GET", ()):
-                return await call_view(transcribe.view_interview)
+                return await call_view(transcribe.view_tape)
+            case ("PATCH", ()):
+                return await call_view(transcribe.patch_tape)
             case ("GET", ("export",)):
-                return await call_view(transcribe.export_interview)
-            case ("POST", suffix_key) if suffix_key in post_routes:
-                handler, form_model = post_routes[suffix_key]
-                return await call_view(handler, form_model=form_model)
-            case (method, ("segment", segment_idx, *segment_tail)) if segment_idx.isdigit():
-                return await dispatch_segment(
+                return await call_view(transcribe.export_tape)
+            case ("GET", ("media",)):
+                return await call_view(transcribe.get_tape_media)
+            case ("POST", ("jobs",)):
+                return await call_view(transcribe.tape_jobs)
+            case ("GET", ("parts",)):
+                return await call_view(transcribe.list_parts_view)
+            case (method, ("parts", part_idx, *part_tail)) if part_idx.isdigit():
+                return await dispatch_part(
                     req,
                     method,
-                    interview_id,
-                    segment_idx,
-                    tuple(segment_tail),
+                    tape_id,
+                    part_idx,
+                    tuple(part_tail),
                 )
             case (_, ()):
-                method_not_allowed("GET")
+                method_not_allowed("GET", "PATCH")
             case (_, ("export",)):
                 method_not_allowed("GET")
-            case (_, suffix_key) if suffix_key in post_routes:
+            case (_, ("media",)):
+                method_not_allowed("GET")
+            case (_, ("jobs",)):
                 method_not_allowed("POST")
-            case (_, ("segment", _, *_)):
+            case (_, ("parts",)):
+                method_not_allowed("GET")
+            case (_, ("parts", _, *_)):
                 raise HTTPException(status_code=404, detail="Not found")
             case _:
                 raise HTTPException(status_code=404, detail="Not found")
@@ -306,27 +262,29 @@ async def dispatch_request(req: Request) -> Response:
     path = req.url.path
     set_path_params(req)
 
-    segments = parse_path(path)
-    if segments is None:
+    parts = parse_path(path)
+    if parts is None:
         raise HTTPException(status_code=404, detail="Not found")
 
-    match (method, segments):
+    match (method, parts):
         case ("GET", ()):
             return await call_view(transcribe.home)
-        case ("GET", ("home",)):
-            return await call_view(transcribe.render_home_content)
-        case ("GET", ("interview-list",)):
-            return await call_view(transcribe.render_interview_list)
+        case ("GET", ("tapes",)):
+            partial = req.query_params.get("partial") == "list"
+            return await call_view(
+                transcribe.list_tapes_view,
+                extra_kwargs={"partial": partial},
+            )
+        case ("POST", ("tapes",)):
+            return await call_view(transcribe.create_tape, form_model=AudioUploadForm)
         case ("GET", ("audio", hash_)):
             set_path_params(req, hash_=hash_)
             return await call_view(transcribe.get_audio)
-        case ("POST", ("upload",)):
-            return await call_view(transcribe.upload_audio, form_model=AudioUploadForm)
-        case (method, ("interview", interview_id, *suffix)):
-            return await dispatch_interview(
+        case (method, ("tapes", tape_id, *suffix)):
+            return await dispatch_tape(
                 req,
                 method,
-                interview_id,
+                tape_id,
                 tuple(suffix),
             )
         case _:
@@ -337,7 +295,7 @@ async def handle_request(req: Request) -> Response:
     """Catch-all Starlette handler that injects shared context and dispatches."""
 
     state: AppParams = req.app.state.app_params
-    segment_len = state.get("segment_duration_seconds", 120)
+    part_len = state.get("part_duration_seconds", 120)
 
     with (
         rest.request.using(req),
@@ -346,8 +304,8 @@ async def handle_request(req: Request) -> Response:
         gemini.http_client.using(state["client"]),
         gemini.uploader.using(gemini.upload),
         gemini.model.using(state["gemini_model"]),
-        store.with_databases(state["interviews_db_path"], state["blobs_db_path"]),
-        segment_duration_seconds.using(segment_len),
+        store.with_databases(state["tapes_db_path"], state["blobs_db_path"]),
+        part_duration_seconds.using(part_len),
     ):
         response = await dispatch_request(req)
         return response if response is not None else TagResponse()
@@ -366,7 +324,7 @@ def create_app(app_state: AppParams) -> Starlette:
             Route(
                 "/{path:path}",
                 handle_request,
-                methods=["GET", "POST", "PUT", "HEAD"],
+                methods=["GET", "POST", "PUT", "PATCH", "HEAD"],
             )
         ]
     )
