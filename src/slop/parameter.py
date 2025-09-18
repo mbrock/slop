@@ -1,7 +1,7 @@
 """Shared Parameter class for context-based configuration."""
 
 import os
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Self
 
@@ -26,23 +26,10 @@ class Parameter[T]:
     @contextmanager
     def using(self: Self, value: T):
         """Context manager to temporarily set the parameter value."""
-        print("Setting parameter", self._var, value)
         token = self._var.set(value)
         try:
             yield
         finally:
-            print("Resetting parameter", self._var, token)
-            self._var.reset(token)
-
-    @asynccontextmanager
-    async def ausing(self: Self, value: T):
-        """Async context manager to temporarily set the parameter value."""
-        print("Setting parameter", self._var, value)
-        token = self._var.set(value)
-        try:
-            yield
-        finally:
-            print("Resetting parameter", self._var, token)
             self._var.reset(token)
 
     @contextmanager

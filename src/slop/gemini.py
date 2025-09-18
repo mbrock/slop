@@ -328,7 +328,6 @@ async def generate_content(
     url = f"{base_url}/v1beta/models/{model_to_use}:streamGenerateContent"
 
     json = request.model_dump(exclude_none=True)
-    import rich
 
     async with aconnect_sse(
         http_client.get(),
@@ -529,7 +528,6 @@ async def generate_content_sync(
     """Non-streaming version of generate_content"""
     model_to_use = model.get()
     url = f"{base_url}/v1beta/models/{model_to_use}:generateContent"
-    rich.print(request.model_dump(exclude_none=True))
     response = await http_client.get().post(
         url,
         params={"key": api_key.get()},
@@ -539,7 +537,6 @@ async def generate_content_sync(
     )
     if response.is_error:
         error_data = response.json()
-        rich.print(error_data)
 
         error_status = error_data.get("error", {}).get("status")
         error_message = error_data.get("error", {}).get(

@@ -23,13 +23,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
-dev-dependencies = ["pytest>=8.4.2"]
-
-[tool.pytest.ini_options]
-markers = ["slow: long-running async tests"]
-addopts = """
-    --maxfail=5
-    --durations=4
-    -ra --tb=short
-    -m "not slow"
-"""
+dev-dependencies = []
