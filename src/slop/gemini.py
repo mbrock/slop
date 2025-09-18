@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import (
     Any,
     AsyncIterator,
+    Awaitable,
+    Callable,
     Literal,
 )
 
@@ -23,6 +25,12 @@ base_url = "https://generativelanguage.googleapis.com"
 http_client = Parameter[httpx.AsyncClient]("gemini_http_client")
 model = Parameter[str]("gemini_model")
 api_key = Parameter[str]("gemini_api_key")
+uploader = Parameter[Callable[[bytes, str], Awaitable["File"]] | None](
+    "gemini_uploader"
+)
+generation_config = Parameter["GenerationConfig | None"]("gemini_generation_config")
+tools = Parameter["list[Tool] | None"]("gemini_tools")
+tool_config = Parameter["ToolConfig | None"]("gemini_tool_config")
 
 
 class FunctionParameter(BaseModel):
@@ -471,6 +479,60 @@ async def upload_file(
     return await upload(data, mime_type, display_name)
 
 
+async def resolve_blob_uris(contents: list[Content]) -> None:
+    """Upload any blob: URIs in contents and update them with real URIs.
+
+    Modifies contents in place. Requires the uploader parameter to be set.
+    """
+    upload_fn = uploader.peek()
+    if not upload_fn:
+        # No uploader configured, just return
+        return
+
+    import anyio
+    from slop.models import get_blob
+
+    # Collect all blob URIs and their parts
+    blobs: dict[str, list[Part]] = {}
+
+    for content in contents:
+        for part in content.parts:
+            if not part.fileData or not part.fileData.fileUri:
+                continue
+            uri = part.fileData.fileUri
+            if uri.startswith("blob:"):
+                blob_hash = uri[5:]  # Skip "blob:" prefix
+                blobs.setdefault(blob_hash, []).append(part)
+
+    if not blobs:
+        return
+
+    # Upload all blobs in parallel
+    uploads: dict[str, File] = {}
+
+    async def upload_blob(blob_hash: str) -> None:
+        data, mime = get_blob(blob_hash)
+        # Use the first part's MIME type if specified, otherwise use stored
+        first_part = blobs[blob_hash][0]
+        if first_part.fileData and first_part.fileData.mimeType:
+            mime = first_part.fileData.mimeType
+        uploads[blob_hash] = await upload_fn(data, mime)
+
+    async with anyio.create_task_group() as tg:
+        for blob_hash in blobs:
+            tg.start_soon(upload_blob, blob_hash)
+
+    # Update all parts with uploaded URIs
+    for blob_hash, parts in blobs.items():
+        uploaded = uploads[blob_hash]
+        for part in parts:
+            if part.fileData:
+                part.fileData.fileUri = uploaded.uri
+                # Keep part's MIME type if specified, otherwise use uploaded
+                if not part.fileData.mimeType:
+                    part.fileData.mimeType = uploaded.mimeType
+
+
 async def get_file(file_name: str) -> File:
     """Get metadata for a specific file.
 
@@ -558,6 +620,52 @@ async def generate_content_sync(
     response.raise_for_status()
 
     return GenerateContentResponse.model_validate(response.json())
+
+
+async def generate(
+    contents: list[Content],
+) -> GenerateContentResponse:
+    """Generate a response (does not modify contents)."""
+    final_config = generation_config.peek()
+    final_tools = tools.peek()
+    final_tool_config = tool_config.peek()
+
+    # Resolve blobs if needed
+    contents_copy = [content.model_copy(deep=True) for content in contents]
+    await resolve_blob_uris(contents_copy)
+
+    request = GenerateRequest(
+        contents=contents_copy,
+        generationConfig=final_config,
+        tools=final_tools,
+        toolConfig=final_tool_config,
+    )
+    response = await generate_content_sync(request)
+
+    return response
+
+
+async def generate_streaming(
+    contents: list[Content],
+) -> AsyncIterator[GenerateContentResponse]:
+    """Generate a streaming response, yielding chunks as they arrive."""
+    final_config = generation_config.peek()
+    final_tools = tools.peek()
+    final_tool_config = tool_config.peek()
+
+    # Resolve blobs if needed
+    contents_copy = [content.model_copy(deep=True) for content in contents]
+    await resolve_blob_uris(contents_copy)
+
+    request = GenerateRequest(
+        contents=contents_copy,
+        generationConfig=final_config,
+        tools=final_tools,
+        toolConfig=final_tool_config,
+    )
+
+    async for response in generate_content(request):
+        yield response
 
 
 # Example usage:

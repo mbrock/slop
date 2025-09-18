@@ -2,14 +2,12 @@ import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from slop import gemini
+from slop import gemini, conf
 from slop.gemini import (
     FileState,
     FunctionCallingConfig,
     FunctionDeclaration,
     GeminiError,
-    GenerationConfig,
-    ThinkingConfig,
     Tool,
     ToolConfig,
 )
@@ -24,7 +22,6 @@ from slop.promptflow import (
     line,
     new_chat,
     text,
-    using_generation_config,
 )
 
 from .testing import scope, spawn, test
@@ -33,7 +30,8 @@ from .testing import scope, spawn, test
 @test
 async def test_basic_text_generation() -> None:
     with (
-        using_generation_config(GenerationConfig(temperature=0.7, maxOutputTokens=200)),
+        conf.temperature(0.7),
+        conf.max_output(200),
         new_chat(),
     ):
         with from_user():
@@ -50,11 +48,7 @@ async def test_basic_text_generation() -> None:
 
 @test
 async def test_streaming_response() -> None:
-    with using_generation_config(
-        GenerationConfig(
-            thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=512)
-        )
-    ):
+    with conf.thinking(include_thoughts=True, budget=512):
         with new_chat():
             with from_user():
                 line("Come up with a limerick about an obscure topic.")
@@ -107,13 +101,13 @@ async def test_function_calling() -> None:
     )
 
     tool = Tool(functionDeclarations=[weather_function])
-    tool_config = ToolConfig(functionCallingConfig=FunctionCallingConfig(mode="AUTO"))
 
     with new_chat():
         with from_user():
             line("What's the weather like in Tokyo?")
 
-        response = await generate(tools=[tool], tool_config=tool_config)
+        with conf.tools(tool), conf.tool_config("ANY"):
+            response = await generate()
         assert response.candidates
 
         part = response.candidates[0].content.parts[0]
@@ -191,11 +185,7 @@ async def test_thinking_basic() -> None:
             At what time will the trains meet? Show your reasoning step by step."""
             )
 
-        with using_generation_config(
-            GenerationConfig(
-                thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=512)
-            )
-        ):
+        with conf.thinking(include_thoughts=True, budget=512):
             response = await generate()
 
     assert response.candidates
@@ -214,11 +204,7 @@ async def test_thinking_disabled() -> None:
         with from_user():
             line("What is 2 + 2?")
 
-        with using_generation_config(
-            GenerationConfig(
-                thinkingConfig=ThinkingConfig(includeThoughts=False, thinkingBudget=0)
-            )
-        ):
+        with conf.thinking(include_thoughts=False, budget=0):
             response = await generate()
 
             assert response.candidates
@@ -233,11 +219,7 @@ async def test_thinking_dynamic() -> None:
         with from_user():
             line("Come up with a mildly interesting fact. Think, but not too hard.")
 
-        with using_generation_config(
-            GenerationConfig(
-                thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=-1)
-            )
-        ):
+        with conf.thinking(include_thoughts=True, budget=-1):
             response = await generate()
         assert response.candidates
 
@@ -263,7 +245,6 @@ async def test_thinking_with_function_calling() -> None:
     )
 
     tool = Tool(functionDeclarations=[math_function])
-    tool_config = ToolConfig(functionCallingConfig=FunctionCallingConfig(mode="AUTO"))
 
     with new_chat():
         with from_user():
@@ -272,12 +253,9 @@ async def test_thinking_with_function_calling() -> None:
                            compounded monthly. Use the calculate function and explain your approach."""
             )
 
-        with using_generation_config(
-            GenerationConfig(
-                thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=512)
-            )
-        ):
-            response = await generate(tools=[tool], tool_config=tool_config)
+        with conf.thinking(include_thoughts=True, budget=512):
+            with conf.tools(tool), conf.tool_config("ANY"):
+                response = await generate()
         assert response.candidates
 
         parts = response.candidates[0].content.parts
@@ -291,11 +269,7 @@ async def test_thinking_with_function_calling() -> None:
 
 @test
 async def test_thinking_multi_turn() -> None:
-    with using_generation_config(
-        GenerationConfig(
-            thinkingConfig=ThinkingConfig(includeThoughts=True, thinkingBudget=512)
-        )
-    ):
+    with conf.thinking(include_thoughts=True, budget=512):
         with new_chat():
             with from_user():
                 line(

@@ -3,19 +3,12 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from contextvars import ContextVar, Token
 from html import escape as html_escape
 from typing import (
     AsyncIterator,
-    Awaitable,
-    Callable,
-    ContextManager,
     Iterable,
-    Iterator,
     Mapping,
 )
-
-import anyio
 
 from slop import gemini
 from slop.gemini import (
@@ -23,19 +16,9 @@ from slop.gemini import (
     File,
     FileData,
     GenerateContentResponse,
-    GenerateRequest,
-    GenerationConfig,
     Part,
-    Tool,
-    ToolConfig,
 )
-from slop.models import get_blob
 from slop.parameter import Parameter
-
-# Mirrors TagFlow's global context tracking so helper functions can operate
-# without passing the builder around explicitly.
-_current_builder: ContextVar[GeminiMessageBuilder | None]
-_current_builder = ContextVar("promptflow_current_builder")
 
 
 def _escape_text(value: str) -> str:
@@ -48,221 +31,152 @@ def _escape_attr(value: object) -> str:
     return html_escape(str(value), quote=True)
 
 
-class GeminiMessageBuilder:
-    """Helper for building Gemini message parts with XML-friendly utilities."""
+class FormattedContentBuffer:
+    """A buffer that accumulates formatted text and converts it to Gemini parts.
 
-    __slots__ = (
-        "role",
-        "_auto_format",
-        "_indent",
-        "_indent_level",
-        "_parts",
-        "_buffer",
-        "_context_tokens",
-    )
+    This maintains indentation state and handles the complexity of merging
+    adjacent text content into parts.
+    """
 
-    def __init__(
-        self,
-        *,
-        role: str | None,
-        auto_format: bool = True,
-        indent: str = "  ",
-    ) -> None:
+    def __init__(self, *, role: str | None = None) -> None:
         self.role = role
-        self._auto_format = auto_format
-        self._indent = indent
-        self._indent_level = 0
-        self._parts: list[Part] = []
-        self._buffer: list[str] = []
-        self._context_tokens: list[Token[GeminiMessageBuilder | None]] = []
+        self.indent_level = 0
+        self.parts: list[Part] = []
+        self.buffer: list[str] = []
 
-    # ------------------------------------------------------------------
-    # context manager protocol
-    # ------------------------------------------------------------------
-    def __enter__(self) -> "GeminiMessageBuilder":  # pragma: no cover - convenience
-        token = _current_builder.set(self)
-        self._context_tokens.append(token)
-        return self
+    def write(self, text: str) -> None:
+        """Write raw text to the buffer."""
+        self.buffer.append(text)
 
-    def __exit__(self, exc_type, exc, tb) -> None:  # pragma: no cover - convenience
-        self._flush_text()
-        token = self._context_tokens.pop()
-        _current_builder.reset(token)
+    def write_line(self, text: str = "") -> None:
+        """Write a line with current indentation."""
+        if auto_format.get() and self._needs_newline():
+            self.buffer.append("\n")
+        if auto_format.get() and self.indent_level:
+            self.buffer.append(indent_str.get() * self.indent_level)
+        self.buffer.append(text)
+        self.buffer.append("\n")
 
-    # ------------------------------------------------------------------
-    # public API
-    # ------------------------------------------------------------------
-    def text(
-        self, value: str | None, *, escape: bool = True, indent: bool = False
-    ) -> None:
-        """Append raw text to the current buffer.
+    def indent(self) -> None:
+        """Increase indentation level."""
+        self.indent_level += 1
 
-        Args:
-            value: The text to append. `None` is ignored for convenience.
-            escape: Escape XML characters (defaults to True).
-            indent: If auto-formatting is enabled, indent this line to the current level.
-        """
-        if not value:
+    def dedent(self) -> None:
+        """Decrease indentation level."""
+        self.indent_level = max(0, self.indent_level - 1)
+
+    def flush(self) -> None:
+        """Flush buffer content to parts, merging with last text part if possible."""
+        if not self.buffer:
             return
-        text_value = _escape_text(value) if escape else value
-        if self._auto_format and indent:
-            self._append_indent(self._indent_level)
-        self._buffer.append(text_value)
+        text = "".join(self.buffer)
+        self.buffer.clear()
+        if not text:
+            return
 
-    def raw(self, value: str | None) -> None:
-        """Append raw (unescaped) text."""
-        self.text(value, escape=False)
+        # Merge with last part if it's text
+        if self.parts and self.parts[-1].text is not None:
+            existing = self.parts[-1].text or ""
+            self.parts[-1].text = existing + text
+        else:
+            self.parts.append(Part(text=text))
 
-    def line(self, value: str | None = "", *, escape: bool = True) -> None:
-        """Append a line of text, respecting indentation when auto-formatting."""
-        if value is None:
-            value = ""
-        if self._auto_format:
-            self._append_indent(self._indent_level)
-        text_value = _escape_text(value) if escape else value
-        self._buffer.append(text_value + "\n")
+    def add_part(self, part: Part) -> None:
+        """Add a non-text part, flushing buffer first."""
+        self.flush()
+        self.parts.append(part)
 
-    def blank_line(self) -> None:
-        """Insert an empty line respecting indentation."""
-        if self._auto_format:
-            self._append_indent(self._indent_level)
-        self._buffer.append("\n")
-
-    @contextmanager
-    def tag(
-        self,
-        name: str,
-        attrs: Mapping[str, object] | None = None,
-        **extra_attrs: object,
-    ):
-        """Context manager that wraps content in opening and closing XML tags."""
-        attributes = dict(attrs or {})
-        attributes.update(extra_attrs)
-        attr_fragment = "".join(
-            f' {key}="{_escape_attr(value)}"' for key, value in attributes.items()
-        )
-        self._write_line(f"<{name}{attr_fragment}>")
-        self._indent_level += 1
-        try:
-            yield self
-        finally:
-            self._indent_level = max(0, self._indent_level - 1)
-            self._write_line(f"</{name}>")
-
-    def file(
-        self,
-        file: File | FileData | str,
-        *,
-        mime_type: str | None = None,
-    ) -> None:
-        """Insert a file reference as its own part, keeping XML tags around it."""
-        file_data: FileData
-        if isinstance(file, FileData):
-            file_data = (
-                file.model_copy(update={"mimeType": mime_type})
-                if mime_type
-                else file.model_copy()
-            )
-        elif isinstance(file, File):
-            file_data = FileData(
-                fileUri=file.uri,
-                mimeType=mime_type or file.mimeType,
-            )
-        elif isinstance(file, str):
-            file_data = FileData(fileUri=file, mimeType=mime_type)
-        else:  # pragma: no cover - defensive programming
-            raise TypeError("file must be a File, FileData, or file URI string")
-
-        if self._auto_format:
-            self._append_indent(self._indent_level)
-        self._flush_text()
-        self._parts.append(Part(fileData=file_data))
-        if self._auto_format:
-            # ensure following text starts on a new line
-            self._buffer.append("\n")
-
-    def extend(self, parts: Iterable[Part]) -> None:
-        """Extend the builder with prebuilt parts."""
-        self._flush_text()
-        for part in parts:
-            if part.text:
-                self._append_part_text(part.text)
-            else:
-                self._parts.append(part)
-
-    def append_part(self, part: Part) -> None:
-        """Append an already constructed part."""
-        self.extend([part])
-
-    def parts(self) -> list[Part]:
-        """Return the assembled list of parts."""
-        self._flush_text()
-        return list(self._parts)
+    def get_parts(self) -> list[Part]:
+        """Get all parts, flushing any remaining buffer."""
+        self.flush()
+        return list(self.parts)
 
     def to_content(self, role: str | None = None) -> Content:
-        """Convert the builder into a Gemini Content object."""
+        """Build a Content object with the specified or default role."""
         final_role = role or self.role
         if not final_role:
             raise ValueError("A role must be provided to build Content")
-        return Content(role=final_role, parts=self.parts())
-
-    # ------------------------------------------------------------------
-    # internal helpers
-    # ------------------------------------------------------------------
-    def _write_line(self, line: str, *, indent_level: int | None = None) -> None:
-        indent = self._indent_level if indent_level is None else indent_level
-        if self._auto_format:
-            self._append_indent(indent)
-            self._buffer.append(line + "\n")
-        else:
-            self._buffer.append(line + "\n")
-
-    def _append_indent(self, indent_level: int) -> None:
-        if not self._auto_format:
-            return
-        if self._needs_newline():
-            self._buffer.append("\n")
-        if indent_level:
-            self._buffer.append(self._indent * indent_level)
+        return Content(role=final_role, parts=self.get_parts())
 
     def _needs_newline(self) -> bool:
+        """Check if we need a newline before the next line."""
         last_char = self._last_character()
         return bool(last_char and last_char != "\n")
 
     def _last_character(self) -> str | None:
-        if self._buffer:
-            for chunk in reversed(self._buffer):
-                if chunk:
-                    return chunk[-1]
-        for part in reversed(self._parts):
-            if part.text:
-                text = part.text
-                if text:
-                    return text[-1]
+        """Get the last character in buffer or parts."""
+        # Check buffer first
+        for chunk in reversed(self.buffer):
+            if chunk:
+                return chunk[-1]
+        # Then check parts
+        for part in reversed(self.parts):
+            if part.text and part.text:
+                return part.text[-1]
         return None
 
-    def _flush_text(self) -> None:
-        if not self._buffer:
-            return
-        text = "".join(self._buffer)
-        self._buffer.clear()
-        if not text:
-            return
-        self._append_part_text(text)
 
-    def _append_part_text(self, text: str) -> None:
-        if self._parts and self._parts[-1].text is not None:
-            existing = self._parts[-1].text or ""
-            self._parts[-1].text = existing + text
-        else:
-            self._parts.append(Part(text=text))
+# Parameters for context management with sensible defaults
+_current_builder = Parameter[FormattedContentBuffer]("promptflow_current_builder")
+current_contents = Parameter[list[Content]]("promptflow_current_contents")
+auto_format = Parameter[bool]("promptflow_auto_format")
+indent_str = Parameter[str]("promptflow_indent_str")
+
+# Set defaults
+auto_format._var.set(True)
+indent_str._var.set("  ")
 
 
-def _require_builder() -> GeminiMessageBuilder:
-    builder = _current_builder.get(None)
+def _require_builder() -> FormattedContentBuffer:
+    """Get the current builder or raise if none is active."""
+    builder = _current_builder.peek()
     if builder is None:
-        raise RuntimeError("No active GeminiMessageBuilder context")
+        raise RuntimeError("No active FormattedContentBuffer context")
     return builder
+
+
+def _require_contents() -> list[Content]:
+    """Get the current contents list or raise if none is active."""
+    contents = current_contents.peek()
+    if contents is None:
+        raise RuntimeError("No active contents list")
+    return contents
+
+
+# Nice public API functions that compose the core functionality
+
+
+def text(value: str | None, *, escape: bool = True, indent: bool = False) -> None:
+    """Append text to the current builder."""
+    if not value:
+        return
+    builder = _require_builder()
+    text_value = _escape_text(value) if escape else value
+    if auto_format.get() and indent:
+        if builder._needs_newline():
+            builder.write("\n")
+        if builder.indent_level:
+            builder.write(indent_str.get() * builder.indent_level)
+    builder.write(text_value)
+
+
+def raw(value: str | None) -> None:
+    """Append raw (unescaped) text."""
+    text(value, escape=False)
+
+
+def line(value: str | None = "", *, escape: bool = True) -> None:
+    """Append a line of text."""
+    if value is None:
+        value = ""
+    builder = _require_builder()
+    text_value = _escape_text(value) if escape else value
+    builder.write_line(text_value)
+
+
+def blank_line() -> None:
+    """Insert an empty line."""
+    line("")
 
 
 @contextmanager
@@ -271,290 +185,156 @@ def tag(
     attrs: Mapping[str, object] | None = None,
     **extra_attrs: object,
 ):
+    """Context manager for XML tags."""
     builder = _require_builder()
-    with builder.tag(name, attrs, **extra_attrs) as ctx_builder:
-        yield ctx_builder
+    attributes = dict(attrs or {})
+    attributes.update(extra_attrs)
+    attr_fragment = "".join(
+        f' {key}="{_escape_attr(value)}"' for key, value in attributes.items()
+    )
 
-
-def text(value: str | None, *, escape: bool = True, indent: bool = False) -> None:
-    _require_builder().text(value, escape=escape, indent=indent)
-
-
-def raw(value: str | None) -> None:
-    _require_builder().raw(value)
-
-
-def line(value: str | None = "", *, escape: bool = True) -> None:
-    _require_builder().line(value, escape=escape)
-
-
-def blank_line() -> None:
-    _require_builder().blank_line()
+    builder.write_line(f"<{name}{attr_fragment}>")
+    builder.indent()
+    try:
+        yield builder
+    finally:
+        builder.dedent()
+        builder.write_line(f"</{name}>")
 
 
 def file(file: File | FileData | str, *, mime_type: str | None = None) -> None:
-    _require_builder().file(file, mime_type=mime_type)
+    """Insert a file reference as a part."""
+    builder = _require_builder()
+
+    # Build the FileData
+    file_data: FileData
+    if isinstance(file, FileData):
+        file_data = (
+            file.model_copy(update={"mimeType": mime_type})
+            if mime_type
+            else file.model_copy()
+        )
+    elif isinstance(file, File):
+        file_data = FileData(
+            fileUri=file.uri,
+            mimeType=mime_type or file.mimeType,
+        )
+    elif isinstance(file, str):
+        file_data = FileData(fileUri=file, mimeType=mime_type)
+    else:
+        raise TypeError("file must be a File, FileData, or file URI string")
+
+    # Add some formatting if needed
+    if auto_format.get():
+        if builder._needs_newline():
+            builder.write("\n")
+        if builder.indent_level:
+            builder.write(indent_str.get() * builder.indent_level)
+
+    # Add the file part
+    builder.add_part(Part(fileData=file_data))
+
+    # Ensure next content starts on new line
+    if auto_format.get():
+        builder.write("\n")
 
 
 def extend(parts: Iterable[Part]) -> None:
-    _require_builder().extend(parts)
+    """Extend the builder with prebuilt parts."""
+    builder = _require_builder()
+    builder.flush()
+    for part in parts:
+        if part.text:
+            # Text parts get merged properly
+            builder.write(part.text)
+            builder.flush()
+        else:
+            builder.add_part(part)
 
 
 def append_part(part: Part) -> None:
-    _require_builder().append_part(part)
-
-
-BlobUploader = Callable[[bytes, str], Awaitable[File]]
-
-
-@contextmanager
-def new_chat(**kwargs: object):
-    """Context manager that creates a new ConversationBuilder and sets it as current."""
-    with current_chat.using(ChatContext(**kwargs)) as chat:
-        yield chat
-
-
-class ChatContext:
-    """Utility for collecting Gemini conversation turns via context managers."""
-
-    def __init__(
-        self,
-        *,
-        auto_format: bool = True,
-        indent: str = "  ",
-        upload: BlobUploader | None = None,
-    ) -> None:
-        self._auto_format = auto_format
-        self._indent = indent
-        self._contents: list[Content] = []
-        self._upload = upload
-        self._conversation_cm: ContextManager[None] | None = None
-
-    @contextmanager
-    def turn(self, role: str):
-        builder = message(role=role, auto_format=self._auto_format, indent=self._indent)
-        with builder:
-            yield builder
-        self._contents.append(builder.to_content())
-
-    def user_turn(self) -> ContextManager[GeminiMessageBuilder]:
-        return self.turn("user")
-
-    def model_turn(self) -> ContextManager[GeminiMessageBuilder]:
-        return self.turn("model")
-
-    # Convenience aliases -------------------------------------------------
-    def user(self) -> ContextManager[GeminiMessageBuilder]:  # pragma: no cover - thin
-        return self.user_turn()
-
-    def model(self) -> ContextManager[GeminiMessageBuilder]:  # pragma: no cover - thin
-        return self.model_turn()
-
-    def append(self, content: Content) -> None:
-        self._contents.append(content)
-
-    def extend(self, contents: Iterable[Content]) -> None:
-        self._contents.extend(contents)
-
-    def to_contents(self) -> list[Content]:
-        return list(self._contents)
-
-    def __iter__(self) -> Iterator[Content]:
-        return iter(self._contents)
-
-    async def build_contents(self) -> list[Content]:
-        """Resolve lazy blob references and return ready-to-send contents."""
-        contents = [content.model_copy(deep=True) for content in self._contents]
-
-        blobs: dict[str, list[Part]] = {}
-        blob_mime_overrides: dict[str, str | None] = {}
-
-        for content in contents:
-            for part in content.parts:
-                file_data = part.fileData
-                if not file_data or not file_data.fileUri:
-                    continue
-                uri = file_data.fileUri
-                if not uri.startswith("blob:"):
-                    continue
-                blob_hash = uri[len("blob:") :]
-                if not blob_hash:
-                    raise ValueError("Blob file URI must include a hash")
-                blobs.setdefault(blob_hash, []).append(part)
-                if file_data.mimeType:
-                    existing = blob_mime_overrides.get(blob_hash)
-                    if existing and existing != file_data.mimeType:
-                        raise ValueError(
-                            f"Conflicting MIME types for blob {blob_hash}:"
-                            f" {existing!r} vs {file_data.mimeType!r}"
-                        )
-                    blob_mime_overrides[blob_hash] = file_data.mimeType
-
-        if not blobs:
-            return contents
-
-        resolved_data: dict[str, tuple[str, str]] = {}
-
-        async def resolve_blob(blob_hash: str) -> None:
-            if self._upload is None:
-                raise RuntimeError(
-                    "ConversationBuilder requires an upload callable to resolve blob URIs"
-                )
-            blob = get_blob(blob_hash)
-            if not blob:
-                raise RuntimeError(f"Blob {blob_hash} not found in blob store")
-            data, stored_mime = blob
-            requested_mime = blob_mime_overrides.get(blob_hash) or stored_mime
-            if not requested_mime:
-                raise RuntimeError(f"Missing MIME type for blob {blob_hash}")
-            uploaded = await self._upload(data, requested_mime)
-            uri = uploaded.uri
-            if not uri:
-                raise RuntimeError(f"Upload for blob {blob_hash} returned empty URI")
-            resolved_mime = (
-                blob_mime_overrides.get(blob_hash)
-                or uploaded.mimeType
-                or requested_mime
-            )
-            if not resolved_mime:
-                raise RuntimeError(f"Upload for blob {blob_hash} returned no MIME type")
-            resolved_data[blob_hash] = (uri, resolved_mime)
-
-        async with anyio.create_task_group() as task_group:
-            for blob_hash in blobs:
-                task_group.start_soon(resolve_blob, blob_hash)
-
-        for blob_hash, parts in blobs.items():
-            if blob_hash not in resolved_data:
-                raise RuntimeError(f"No upload result for blob {blob_hash}")
-            uri, resolved_mime = resolved_data[blob_hash]
-            for part in parts:
-                if not part.fileData:
-                    continue
-                requested_mime = part.fileData.mimeType or blob_mime_overrides.get(
-                    blob_hash
-                )
-                part.fileData.fileUri = uri
-                part.fileData.mimeType = requested_mime or resolved_mime
-
-        return contents
-
-    async def to_request(
-        self,
-        *,
-        generation_config: GenerationConfig | None = None,
-        tools: list[Tool] | None = None,
-        tool_config: ToolConfig | None = None,
-    ) -> GenerateRequest:
-        contents = await self.build_contents()
-        return GenerateRequest(
-            contents=contents,
-            generationConfig=generation_config,
-            tools=tools,
-            toolConfig=tool_config,
-        )
-
-    async def complete(
-        self,
-        *,
-        generation_config: GenerationConfig | None = None,
-        tools: list[Tool] | None = None,
-        tool_config: ToolConfig | None = None,
-    ) -> GenerateContentResponse:
-        config = generation_config
-        if config is None:
-            config = current_generation_config.peek()
-
-        request = await self.to_request(
-            generation_config=config, tools=tools, tool_config=tool_config
-        )
-        response = await gemini.generate_content_sync(request)
-
-        if response.candidates:
-            self._contents.append(response.candidates[0].content.model_copy(deep=True))
-
-        return response
-
-
-current_chat = Parameter[ChatContext]("promptflow_current_chat")
-current_generation_config = Parameter[GenerationConfig | None](
-    "promptflow_generation_config"
-)
-
-
-def _require_chat() -> ChatContext:
-    chat = current_chat.peek()
-    if chat is None:
-        raise RuntimeError("No active ChatContext")
-    return chat
+    """Append an already constructed part."""
+    extend([part])
 
 
 @contextmanager
-def from_user() -> Iterator[GeminiMessageBuilder]:
-    chat = _require_chat()
-    with chat.user_turn() as builder:
+def message(*, role: str = "user"):
+    """Context manager for building a message."""
+    builder = FormattedContentBuffer(role=role)
+    with _current_builder.using(builder):
+        yield builder
+        builder.flush()
+
+
+@contextmanager
+def parts_builder():
+    """Context manager for building parts without a role."""
+    builder = FormattedContentBuffer(role=None)
+    with _current_builder.using(builder):
+        yield builder
+        builder.flush()
+
+
+@contextmanager
+def new_chat():
+    """Context manager that creates a new conversation."""
+    contents: list[Content] = []
+    with current_contents.using(contents):
+        yield contents
+
+
+@contextmanager
+def turn(role: str):
+    """Add a conversation turn with the specified role."""
+    contents = _require_contents()
+    with message(role=role) as builder:
+        yield builder
+        contents.append(builder.to_content())
+
+
+@contextmanager
+def from_user():
+    """Add a user turn to the conversation."""
+    with turn("user") as builder:
         yield builder
 
 
 @contextmanager
-def from_model() -> Iterator[GeminiMessageBuilder]:
-    chat = _require_chat()
-    with chat.model_turn() as builder:
+def from_model():
+    """Add a model turn to the conversation."""
+    with turn("model") as builder:
         yield builder
 
 
-@contextmanager
-def using_generation_config(config: GenerationConfig | None):
-    with current_generation_config.using(config):
-        yield
+def append_content(content: Content) -> None:
+    """Append a content to the current conversation."""
+    contents = _require_contents()
+    contents.append(content)
 
 
-async def generate(
-    *,
-    generation_config: GenerationConfig | None = None,
-    tools: list[Tool] | None = None,
-    tool_config: ToolConfig | None = None,
-) -> GenerateContentResponse:
-    chat = _require_chat()
-    return await chat.complete(
-        generation_config=generation_config, tools=tools, tool_config=tool_config
-    )
+def extend_contents(contents_to_add: Iterable[Content]) -> None:
+    """Extend the current conversation with multiple contents."""
+    contents = _require_contents()
+    contents.extend(contents_to_add)
 
 
-async def generate_streaming(
-    *,
-    generation_config: GenerationConfig | None = None,
-    tools: list[Tool] | None = None,
-    tool_config: ToolConfig | None = None,
-) -> AsyncIterator[GenerateContentResponse]:
-    chat = _require_chat()
-    config = generation_config
-    if config is None:
-        config = current_generation_config.peek()
+async def generate() -> GenerateContentResponse:
+    """Generate content using the current conversation."""
+    contents = _require_contents()
+    response = await gemini.generate(contents)
 
-    request = await chat.to_request(
-        generation_config=config, tools=tools, tool_config=tool_config
-    )
+    if response.candidates:
+        contents.append(response.candidates[0].content.model_copy(deep=True))
 
-    with from_model() as reply:
-        async for response in gemini.generate_content(request):
+    return response
+
+
+async def generate_streaming() -> AsyncIterator[GenerateContentResponse]:
+    """Generate streaming content using the current conversation."""
+    contents = _require_contents()
+
+    with from_model():
+        async for response in gemini.generate_streaming(contents):
             if response.candidates:
-                reply.extend(response.candidates[0].content.parts or [])
+                extend(response.candidates[0].content.parts or [])
             yield response
-
-
-def message(
-    *,
-    role: str = "user",
-    auto_format: bool = True,
-    indent: str = "  ",
-) -> GeminiMessageBuilder:
-    """Convenience factory for `with message(...) as prompt:` usage."""
-    return GeminiMessageBuilder(role=role, auto_format=auto_format, indent=indent)
-
-
-def parts_builder(
-    *, auto_format: bool = True, indent: str = "  "
-) -> GeminiMessageBuilder:
-    """Create a builder when only individual parts (no role) are required."""
-    return GeminiMessageBuilder(role=None, auto_format=auto_format, indent=indent)

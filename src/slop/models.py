@@ -273,7 +273,9 @@ def save_blob(data: bytes, mime_type: str) -> str:
     return hash_
 
 
-def get_blob(hash_: str) -> tuple[bytes, str] | None:
+def get_blob(hash_: str) -> tuple[bytes, str]:
     """Get binary data and mime type by hash."""
-
-    return database.get().blobs.get(hash_)
+    result = database.get().blobs.get(hash_)
+    if result is None:
+        raise KeyError(f"Blob {hash_} not found")
+    return result

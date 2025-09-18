@@ -806,10 +806,10 @@ async def get_audio(hash_: str, request: Request):
     """
     Serve audio file by hash with support for range requests.
     """
-    if not (result := get_blob(hash_)):
+    try:
+        data, mime_type = get_blob(hash_)
+    except KeyError:
         raise HTTPException(status_code=404, detail="Audio not found")
-
-    data, mime_type = result
     file_size = len(data)
 
     # Parse range header

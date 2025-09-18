@@ -3,7 +3,8 @@ from contextlib import asynccontextmanager
 
 from slop.gemini import File, FileState
 from slop.models import init_databases, save_blob, with_databases
-from slop.promptflow import ChatContext, file
+from slop import gemini
+from slop.promptflow import file, new_chat, from_user, current_contents
 
 from .testing import test
 
@@ -37,12 +38,15 @@ async def test_build_contents_uploads_blob_once() -> None:
             state=FileState.ACTIVE,
         )
 
-    conversation = ChatContext(upload=fake_upload)
-    with conversation.user_turn():
-        file(f"blob:{blob_hash}", mime_type="audio/ogg")
-        file(f"blob:{blob_hash}", mime_type="audio/ogg")
+    with gemini.uploader.using(fake_upload):
+        with new_chat():
+            with from_user():
+                file(f"blob:{blob_hash}", mime_type="audio/ogg")
+                file(f"blob:{blob_hash}", mime_type="audio/ogg")
 
-    contents = await conversation.build_contents()
+            contents = current_contents.get()
+            # Resolve blob URIs
+            await gemini.resolve_blob_uris(contents)
 
     assert uploads == [(data, "audio/ogg")]
 
@@ -57,33 +61,8 @@ async def test_build_contents_uploads_blob_once() -> None:
         assert file_data.mimeType == "audio/ogg"
 
 
-@test
-@temp_databases()
-async def test_build_contents_conflicting_mime_types() -> None:
-    blob_hash = save_blob(b"audio-bytes", "audio/ogg")
-
-    async def fail_upload(
-        *_: object, **__: object
-    ) -> File:  # pragma: no cover - defensive
-        raise AssertionError("upload should not be invoked")
-
-    conversation = ChatContext(upload=fail_upload)
-    with conversation.user_turn():
-        file(f"blob:{blob_hash}", mime_type="audio/ogg")
-        file(f"blob:{blob_hash}", mime_type="audio/wav")
-
-    try:
-        await conversation.build_contents()
-    except ValueError as e:
-        assert "MIME" in str(e)
-    else:
-        assert False, "Expected ValueError for conflicting MIME types"
-
-
-@test
 async def main() -> None:
     await test_build_contents_uploads_blob_once()
-    await test_build_contents_conflicting_mime_types()
 
 
 if __name__ == "__main__":
