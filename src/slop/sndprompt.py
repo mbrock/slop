@@ -115,7 +115,7 @@ async def transcribe_audio_segment(
         segment = Segment(start_time=start_time, end_time=end_time)
 
     # Build a multi-turn conversation using promptflow helpers.
-    conversation = ConversationBuilder()
+    conversation = ConversationBuilder(upload=gemini.upload)
 
     # Add each context segment as a separate conversation turn pair.
     if context_segments:
@@ -139,8 +139,9 @@ async def transcribe_audio_segment(
             await insert_segment_audio(interview, segment)
 
     # Request transcription; the model should now respond with a transcript only for the current audio.
+    contents = await conversation.build_contents()
     request = GenerateRequest(
-        contents=conversation.to_contents(),
+        contents=contents,
         generationConfig=GenerationConfig(temperature=0.1),
     )
     response = await gemini.generate_content_sync(request)
@@ -185,7 +186,7 @@ async def improve_speaker_identification_segment(
     Returns:
         List of utterances with improved speaker assignments
     """
-    prompt = ConversationBuilder()
+    prompt = ConversationBuilder(upload=gemini.upload)
 
     with prompt.user_turn():
         # Include previous segments as context
@@ -208,8 +209,9 @@ async def improve_speaker_identification_segment(
 
         render_speaker_instruction(hint)
 
+    contents = await prompt.build_contents()
     request = GenerateRequest(
-        contents=prompt.to_contents(),
+        contents=contents,
         generationConfig=GenerationConfig(temperature=0.1),
     )
     response = await gemini.generate_content_sync(request)

@@ -23,20 +23,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
-dev-dependencies = [
-    "pytest>=8.4.2",
-    "pytest-asyncio>=1.2.0",
-    "pytest-xdist>=3.8.0",
-    "pytest-timeout>=2.4.0",
-]
+dev-dependencies = ["pytest>=8.4.2"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
-asyncio_default_test_loop_scope = "session"
 markers = ["slow: long-running async tests"]
 addopts = """
-    --dist=loadfile
-    --timeout=10 --maxfail=5
+    --maxfail=5
     --durations=4
     -ra --tb=short
     -m "not slow"

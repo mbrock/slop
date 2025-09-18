@@ -4,7 +4,6 @@ import os
 
 import httpx
 import pytest
-import pytest_asyncio
 
 from src.slop import gemini
 
@@ -30,8 +29,13 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_slow)
 
 
-@pytest_asyncio.fixture(scope="session", autouse=True)
-async def configure_gemini_context():
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+async def configure_gemini_context(anyio_backend):
     """Bind shared Gemini context for the entire test session."""
 
     api_key = os.getenv("GOOGLE_API_KEY")

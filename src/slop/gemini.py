@@ -370,7 +370,7 @@ def _generate_content_addressed_name(data: bytes, mime_type: str) -> str:
     return f"files/{hash_obj.hexdigest()[:16]}"
 
 
-async def upload_bytes(
+async def upload(
     data: bytes,
     mime_type: str,
     display_name: str | None = None,
@@ -469,7 +469,7 @@ async def upload_file(
     with open(file_path, "rb") as f:
         data = f.read()
 
-    return await upload_bytes(data, mime_type, display_name)
+    return await upload(data, mime_type, display_name)
 
 
 async def get_file(file_name: str) -> File:

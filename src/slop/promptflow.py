@@ -5,10 +5,12 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from html import escape as html_escape
-from typing import ContextManager, Iterable, Iterator, Mapping
+from typing import Awaitable, Callable, ContextManager, Iterable, Iterator, Mapping
+
+import anyio
 
 from slop.gemini import Content, File, FileData, Part
-
+from slop.models import blobs_db, get_blob
 
 # Mirrors TagFlow's global context tracking so helper functions can operate
 # without passing the builder around explicitly.
@@ -70,7 +72,9 @@ class GeminiMessageBuilder:
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
-    def text(self, value: str | None, *, escape: bool = True, indent: bool = False) -> None:
+    def text(
+        self, value: str | None, *, escape: bool = True, indent: bool = False
+    ) -> None:
         """Append raw text to the current buffer.
 
         Args:
@@ -110,7 +114,7 @@ class GeminiMessageBuilder:
         name: str,
         attrs: Mapping[str, object] | None = None,
         **extra_attrs: object,
-    ) -> Iterator["GeminiMessageBuilder"]:
+    ):
         """Context manager that wraps content in opening and closing XML tags."""
         attributes = dict(attrs or {})
         attributes.update(extra_attrs)
@@ -147,9 +151,7 @@ class GeminiMessageBuilder:
         elif isinstance(file, str):
             file_data = FileData(fileUri=file, mimeType=mime_type)
         else:  # pragma: no cover - defensive programming
-            raise TypeError(
-                "file must be a File, FileData, or file URI string"
-            )
+            raise TypeError("file must be a File, FileData, or file URI string")
 
         if self._auto_format:
             self._append_indent(self._indent_level)
@@ -248,7 +250,7 @@ def tag(
     name: str,
     attrs: Mapping[str, object] | None = None,
     **extra_attrs: object,
-) -> Iterator[GeminiMessageBuilder]:
+):
     builder = _require_builder()
     with builder.tag(name, attrs, **extra_attrs) as ctx_builder:
         yield ctx_builder
@@ -282,18 +284,30 @@ def append_part(part: Part) -> None:
     _require_builder().append_part(part)
 
 
+BlobUploader = Callable[[bytes, str], Awaitable[File]]
+
+
 class ConversationBuilder:
     """Utility for collecting Gemini conversation turns via context managers."""
 
-    __slots__ = ("_auto_format", "_indent", "_contents")
+    __slots__ = ("_auto_format", "_indent", "_contents", "_upload")
 
-    def __init__(self, *, auto_format: bool = True, indent: str = "  ") -> None:
+    def __init__(
+        self,
+        *,
+        auto_format: bool = True,
+        indent: str = "  ",
+        upload: BlobUploader | None,
+    ) -> None:
         self._auto_format = auto_format
         self._indent = indent
         self._contents: list[Content] = []
+        if upload is None:
+            raise ValueError("upload callable is required")
+        self._upload = upload
 
     @contextmanager
-    def turn(self, role: str) -> Iterator[GeminiMessageBuilder]:
+    def turn(self, role: str):
         builder = message(role=role, auto_format=self._auto_format, indent=self._indent)
         with builder:
             yield builder
@@ -316,6 +330,84 @@ class ConversationBuilder:
 
     def __iter__(self) -> Iterator[Content]:
         return iter(self._contents)
+
+    async def build_contents(self) -> list[Content]:
+        """Resolve lazy blob references and return ready-to-send contents."""
+        print("build_contents", blobs_db.peek())
+
+        contents = [content.model_copy(deep=True) for content in self._contents]
+
+        blobs: dict[str, list[Part]] = {}
+        blob_mime_overrides: dict[str, str | None] = {}
+
+        for content in contents:
+            for part in content.parts:
+                file_data = part.fileData
+                if not file_data or not file_data.fileUri:
+                    continue
+                uri = file_data.fileUri
+                if not uri.startswith("blob:"):
+                    continue
+                blob_hash = uri[len("blob:") :]
+                if not blob_hash:
+                    raise ValueError("Blob file URI must include a hash")
+                blobs.setdefault(blob_hash, []).append(part)
+                if file_data.mimeType:
+                    existing = blob_mime_overrides.get(blob_hash)
+                    if existing and existing != file_data.mimeType:
+                        raise ValueError(
+                            f"Conflicting MIME types for blob {blob_hash}:"
+                            f" {existing!r} vs {file_data.mimeType!r}"
+                        )
+                    blob_mime_overrides[blob_hash] = file_data.mimeType
+
+        if not blobs:
+            return contents
+
+        resolved_data: dict[str, tuple[str, str]] = {}
+
+        async def resolve_blob(blob_hash: str) -> None:
+            print(3, blobs_db.peek())
+            blob = get_blob(blob_hash)
+            if not blob:
+                raise RuntimeError(f"Blob {blob_hash} not found in blob store")
+            data, stored_mime = blob
+            requested_mime = blob_mime_overrides.get(blob_hash) or stored_mime
+            if not requested_mime:
+                raise RuntimeError(f"Missing MIME type for blob {blob_hash}")
+            uploaded = await self._upload(data, requested_mime)
+            uri = uploaded.uri
+            if not uri:
+                raise RuntimeError(f"Upload for blob {blob_hash} returned empty URI")
+            resolved_mime = (
+                blob_mime_overrides.get(blob_hash)
+                or uploaded.mimeType
+                or requested_mime
+            )
+            if not resolved_mime:
+                raise RuntimeError(f"Upload for blob {blob_hash} returned no MIME type")
+            resolved_data[blob_hash] = (uri, resolved_mime)
+
+        print(1, blobs_db.peek())
+        async with anyio.create_task_group() as task_group:
+            print(2, blobs_db.peek())
+            for blob_hash in blobs:
+                task_group.start_soon(resolve_blob, blob_hash)
+
+        for blob_hash, parts in blobs.items():
+            if blob_hash not in resolved_data:
+                raise RuntimeError(f"No upload result for blob {blob_hash}")
+            uri, resolved_mime = resolved_data[blob_hash]
+            for part in parts:
+                if not part.fileData:
+                    continue
+                requested_mime = part.fileData.mimeType or blob_mime_overrides.get(
+                    blob_hash
+                )
+                part.fileData.fileUri = uri
+                part.fileData.mimeType = requested_mime or resolved_mime
+
+        return contents
 
 
 def message(
