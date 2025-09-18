@@ -50,6 +50,6 @@ Tests use a shared `tests/testing.py` module that provides utilities for creatin
 
 ## Development & Ops Notes
 - Python 3.13 project managed with `uv`; lockfile `uv.lock` ensures deterministic installs.
-- Docker image bundles dependencies, sets `IEVA_DATA=/data`, and launches `uv run fastapi run src.slop.transcribe:app --host 0.0.0.0 --port 8080`.
-- Local development works well with `uv run fastapi dev src.slop.transcribe:app`.
+- Docker image bundles dependencies, sets `IEVA_DATA=/data`, and launches `uv run uvicorn slop.app:app --host 0.0.0.0 --port 8080`.
+- Local development works well with `uv run uvicorn slop.app:app --reload`.
 - `tagflow-demo.py` offers a lightweight example of TagFlow usage outside the main app.

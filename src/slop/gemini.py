@@ -485,6 +485,7 @@ async def resolve_blob_uris(contents: list[Content]) -> None:
         return
 
     import anyio
+
     from slop.models import get_blob
 
     # Collect all blob URIs and their parts

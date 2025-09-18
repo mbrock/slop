@@ -5,8 +5,10 @@ from pydantic import BaseModel, Field
 
 from slop.store import (
     find,
-    list_models,
     save,
+)
+from slop.store import (
+    list_models as store_list_models,
 )
 
 
@@ -79,4 +81,4 @@ def save_interview(interview: Interview) -> str:
 def list_interviews() -> list[Interview]:
     """Compatibility wrapper returning every stored interview."""
 
-    return list_models(Interview)
+    return store_list_models(Interview)

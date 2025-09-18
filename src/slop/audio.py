@@ -4,10 +4,11 @@ from pathlib import Path
 from subprocess import PIPE
 
 import anyio
-from fastapi import HTTPException
+from starlette.exceptions import HTTPException
 
-from slop.models import Interview, Segment, get_blob, save_blob
+from slop.models import Interview, Segment
 from slop.promptflow import file as promptflow_file
+from slop.store import get_blob, save_blob
 
 logger = logging.getLogger(__name__)
 

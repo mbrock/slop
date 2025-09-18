@@ -3,10 +3,9 @@ import tempfile
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
 
-import slop.models as models
-from slop.app import AppState, configure_app
+from slop import store
+from slop.app import create_app
 from slop.parameter import Parameter
 
 from .testing import test
@@ -14,45 +13,36 @@ from .testing import test
 current_client = Parameter[httpx.AsyncClient]("client")
 
 
-def build_app() -> FastAPI:
-    """Create a fresh FastAPI application for testing."""
-
-    return configure_app(FastAPI(title="Ieva's Interviews Test"))
-
-
 @asynccontextmanager
 async def appclient():
     """Provide an ASGI test client wired to temporary databases."""
 
-    api_key = os.environ["GOOGLE_API_KEY"]
+    api_key = os.environ.get("GOOGLE_API_KEY")
 
-    app = build_app()
+    with tempfile.TemporaryDirectory() as data_dir:
+        db1 = os.path.join(data_dir, "interviews.db")
+        db2 = os.path.join(data_dir, "blobs.db")
 
-    with (
-        tempfile.NamedTemporaryFile(suffix=".db") as interviews_tmp,
-        tempfile.NamedTemporaryFile(suffix=".db") as blobs_tmp,
-    ):
-        interviews_db_path = interviews_tmp.name
-        blobs_db_path = blobs_tmp.name
+        with store.with_databases(db1, db2):
+            store.init_databases()
 
-        with models.with_databases(interviews_db_path, blobs_db_path):
-            models.init_databases()
+        async with httpx.AsyncClient() as their_client:
+            app = create_app(
+                {
+                    "client": their_client,
+                    "google_api_key": api_key,
+                    "gemini_model": "gemini-2.5-flash-lite",
+                    "interviews_db_path": db1,
+                    "blobs_db_path": db2,
+                }
+            )
 
-            async with httpx.AsyncClient() as upstream_client:
-                app.state.state = AppState(
-                    client=upstream_client,
-                    google_api_key=api_key,
-                    gemini_model="gemini-2.5-flash-lite",
-                    interviews_db_path=interviews_db_path,
-                    blobs_db_path=blobs_db_path,
-                )
-
-                async with httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=app),
-                    base_url="http://test.example",
-                ) as client:
-                    with current_client.using(client):
-                        yield client
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test.example",
+            ) as client:
+                with current_client.using(client):
+                    yield client
 
 
 async def get(url: str):

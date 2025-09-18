@@ -9,17 +9,10 @@ from subprocess import PIPE
 import anyio
 from docx import Document
 from docx.shared import Pt
-from fastapi import (
-    APIRouter,
-    Form,
-    HTTPException,
-    Request,
-    Response,
-    UploadFile,
-)
-from fastapi.responses import RedirectResponse, StreamingResponse
+from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException
+from starlette.responses import RedirectResponse, Response, StreamingResponse
 from tagflow import (
-    TagResponse,
     attr,
     classes,
     tag,
@@ -30,19 +23,21 @@ from slop import gemini
 from slop.gemini import GeminiError, ModelOverloadedError
 from slop.models import (
     Interview,
-    ModelDecodeError,
-    ModelNotFoundError,
     Segment,
     Utterance,
-    get_blob,
     get_interview,
     list_interviews,
-    save_blob,
     save_interview,
 )
 from slop.sndprompt import (
     improve_speaker_identification_segment,
     transcribe_audio_segment,
+)
+from slop.store import (
+    ModelDecodeError,
+    ModelNotFoundError,
+    get_blob,
+    save_blob,
 )
 from slop.views import speaker_classes, upload_area
 
@@ -64,11 +59,6 @@ IMPROVE_SPEAKERS_ONCLICK = (
     "if (selected) { payload.model_name = selected.value; } "
     "this.setAttribute('hx-vals', JSON.stringify(payload)); "
     "return true;"
-)
-
-
-app = APIRouter(
-    default_response_class=TagResponse,
 )
 
 
@@ -159,11 +149,8 @@ def calculate_progress(current: str, total: str) -> int:
     return int((current_secs / total_secs) * 100)
 
 
-@app.get("/interview-list")
-async def interview_list():
-    """
-    Renders the interview list page.
-    """
+def render_interview_list() -> None:
+    """Render the interview list content into the current TagFlow document."""
     with tag.div(classes="space-y-4", id="interview-list"):
         for interview in list_interviews():
             progress = calculate_progress(
@@ -188,27 +175,24 @@ async def interview_list():
                             pass
 
 
-@app.get("/home")
-async def render_home():
+def render_home_content() -> None:
+    """Render the shared home-page content."""
     breadcrumb({"Ieva's Interviews": "#"})
     with tag.div(classes="max-w-4xl mx-auto p-4"):
         with tag.div(classes="mb-8"):
             # with tag.h1(classes="text-2xl font-bold mb-4"):
             #     text("Ieva's Interviews")
 
-            await interview_list()
+            render_interview_list()
 
         with tag.div(classes="prose mx-auto"):
             upload_area(target="main")
 
 
-@app.get("/")
-async def home():
-    """
-    Renders the home page with an upload area.
-    """
+def home():
+    """Render the full home page layout with the upload area."""
     with layout("Home"):
-        await render_home()
+        render_home_content()
 
 
 async def process_audio(input_path: Path) -> bytes:
@@ -243,7 +227,6 @@ async def process_audio(input_path: Path) -> bytes:
     return process.stdout
 
 
-@app.post("/upload")
 async def upload_audio(audio: UploadFile):
     """
     Endpoint to handle file upload:
@@ -282,7 +265,7 @@ async def upload_audio(audio: UploadFile):
         finally:
             tmp_path.unlink()
 
-    await render_home()
+    render_home_content()
 
 
 def svg_icons():
@@ -609,16 +592,7 @@ def interview_header(title: str, interview_id: str):
                 button_view("Export DOCX", href=f"/interview/{interview_id}/export")
 
 
-@app.get("/interview/{interview_id}/segment/{segment_index}")
-async def view_segment(interview_id: str, segment_index: int):
-    """Renders a single segment as a partial view."""
-    interview = load_interview_or_error(interview_id)
-
-    try:
-        segment = interview.segments[segment_index]
-    except IndexError:
-        raise HTTPException(status_code=404, detail="Segment not found")
-
+def render_segment(interview_id: str, segment_index: int, segment: Segment) -> None:
     with tag.div(
         id=f"segment-{segment_index}",
         classes="flex flex-col gap-2 p-4 py-2 border-t-4 border-gray-400 mt-4",
@@ -666,6 +640,18 @@ async def view_segment(interview_id: str, segment_index: int):
                     render_utterance(interview_id, segment_index, i, utterance)
 
 
+def view_segment(interview_id: str, segment_index: int):
+    """Renders a single segment as a partial view."""
+    interview = load_interview_or_error(interview_id)
+
+    try:
+        segment = interview.segments[segment_index]
+    except IndexError:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    render_segment(interview_id, segment_index, segment)
+
+
 def render_utterance(interview_id, segment_index, i, utterance):
     with tag.span(
         **{
@@ -680,8 +666,7 @@ def render_utterance(interview_id, segment_index, i, utterance):
         text(utterance.text)
 
 
-@app.get("/interview/{interview_id}/segment/{segment_index}/edit")
-async def edit_segment_dialog(interview_id: str, segment_index: int):
+def edit_segment_dialog(interview_id: str, segment_index: int):
     """Renders the inline edit form for a segment."""
     interview = load_interview_or_error(interview_id)
 
@@ -729,6 +714,7 @@ async def edit_segment_dialog(interview_id: str, segment_index: int):
                             }
                         ):
                             pass
+
                 with tag.button(
                     type="button",
                     classes="p-2 text-gray-600 hover:text-gray-800",
@@ -756,8 +742,7 @@ async def edit_segment_dialog(interview_id: str, segment_index: int):
                             pass
 
 
-@app.get("/interview/{interview_id}")
-async def view_interview(interview_id: str):
+def view_interview(interview_id: str):
     """
     Renders the interview page, showing the audio player and segments.
     """
@@ -770,7 +755,7 @@ async def view_interview(interview_id: str):
             with tag.div(id="segments", classes="flex flex-col gap-2"):
                 if interview.segments:
                     for i, segment in enumerate(interview.segments):
-                        await view_segment(interview_id, i)
+                        render_segment(interview_id, i, segment)
 
             # Progress bar and transcribe button section
             with tag.div(classes="border-t-4 border-gray-400 mt-4"):
@@ -801,8 +786,7 @@ async def view_interview(interview_id: str):
                     )
 
 
-@app.get("/audio/{hash_}")
-async def get_audio(hash_: str, request: Request):
+def get_audio(hash_: str, range_header: str | None):
     """
     Serve audio file by hash with support for range requests.
     """
@@ -813,7 +797,6 @@ async def get_audio(hash_: str, request: Request):
     file_size = len(data)
 
     # Parse range header
-    range_header = request.headers.get("range")
     if not range_header:
         # No range requested, return full file
         return Response(
@@ -851,10 +834,7 @@ async def get_audio(hash_: str, request: Request):
     )
 
 
-@app.post("/interview/{interview_id}/transcribe-next")
-async def transcribe_next_segment(
-    interview_id: str,
-):
+async def transcribe_next_segment(interview_id: str):
     """
     Transcribe the next audio segment (2 minutes) for the given interview.
     Returns just the new segment as a partial view.
@@ -896,7 +876,7 @@ async def transcribe_next_segment(
         save_interview(interview)
 
         # Return the new segment as a partial view
-        return await view_segment(interview_id, len(interview.segments) - 1)
+        render_segment(interview_id, len(interview.segments) - 1, segment)
 
     except ModelOverloadedError as e:
         with tag.div(
@@ -930,11 +910,7 @@ async def transcribe_next_segment(
                 text(e.message)
 
 
-@app.post("/interview/{interview_id}/segment/{segment_index}/retranscribe")
-async def retranscribe_segment(
-    interview_id: str,
-    segment_index: int,
-):
+async def retranscribe_segment(interview_id: str, segment_index: int):
     """Retranscribe a specific segment using Gemini."""
     interview = load_interview_or_error(interview_id)
 
@@ -963,14 +939,11 @@ async def retranscribe_segment(
     save_interview(interview)
 
     # Return the updated segment view
-    return await view_segment(interview_id, segment_index)
+    render_segment(interview_id, segment_index, segment)
 
 
-@app.post("/interview/{interview_id}/segment/{segment_index}/improve-speakers")
 async def improve_speaker_identification(
-    interview_id: str,
-    segment_index: int,
-    hint: str | None = Form(None),
+    interview_id: str, segment_index: int, hint: str | None
 ):
     """Improve speaker identification for a specific segment using Gemini."""
     interview = load_interview_or_error(interview_id)
@@ -1000,7 +973,7 @@ async def improve_speaker_identification(
     save_interview(interview)
 
     # Return the updated segment view
-    return await view_segment(interview_id, segment_index)
+    render_segment(interview_id, segment_index, segment)
 
 
 def increment_time(time_str: str, seconds: int) -> str:
@@ -1044,12 +1017,7 @@ async def get_audio_duration(input_path: Path) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-@app.put("/interview/{interview_id}/segment/{segment_index}")
-async def update_segment(
-    interview_id: str,
-    segment_index: int,
-    content: str = Form(...),
-):
+def update_segment(interview_id: str, segment_index: int, content: str):
     """Updates a segment's utterances from the edit form."""
     interview = load_interview_or_error(interview_id)
 
@@ -1099,10 +1067,11 @@ async def update_segment(
             render_utterance(interview_id, segment_index, i, utterance)
 
 
-@app.post("/interview/{interview_id}/rename")
-async def rename_interview(interview_id: str, new_name: str = Form(...)):
+def rename_interview(interview_id: str, new_name: str) -> RedirectResponse:
     """Processes the interview rename."""
     interview = load_interview_or_error(interview_id)
+    if not new_name:
+        raise HTTPException(status_code=400, detail="New name required")
 
     interview.filename = new_name
     save_interview(interview)
@@ -1110,8 +1079,7 @@ async def rename_interview(interview_id: str, new_name: str = Form(...)):
     return RedirectResponse(url=f"/interview/{interview_id}", status_code=303)
 
 
-@app.get("/interview/{interview_id}/export")
-async def export_interview(interview_id: str):
+def export_interview(interview_id: str):
     """Export the interview as a DOCX file."""
     interview = load_interview_or_error(interview_id)
 
@@ -1156,8 +1124,7 @@ async def export_interview(interview_id: str):
     )
 
 
-@app.post("/interview/{interview_id}/context-segments")
-async def update_context_segments(interview_id: str, context_segments: int = Form(...)):
+def update_context_segments(interview_id: str, context_segments: int) -> Response:
     """Updates the number of context segments to use for transcription."""
     interview = load_interview_or_error(interview_id)
 
@@ -1169,12 +1136,8 @@ async def update_context_segments(interview_id: str, context_segments: int = For
     return Response(status_code=204)  # No content response
 
 
-@app.post("/interview/{interview_id}/segment/{segment_index}/update-speaker")
-async def update_speaker(
-    interview_id: str,
-    segment_index: int,
-    utterance_index: int = Form(...),
-    key: str = Form(...),
+def update_speaker(
+    interview_id: str, segment_index: int, utterance_index: int, key: str
 ):
     """Updates the speaker for a specific utterance."""
     interview = load_interview_or_error(interview_id)
@@ -1191,4 +1154,4 @@ async def update_speaker(
         save_interview(interview)
 
     # Return the updated utterance view
-    return render_utterance(interview_id, segment_index, utterance_index, utterance)
+    render_utterance(interview_id, segment_index, utterance_index, utterance)

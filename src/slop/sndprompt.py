@@ -3,20 +3,22 @@ import re
 import xml.etree.ElementTree as ET
 from io import StringIO
 
-from fastapi import HTTPException
+from starlette.exceptions import HTTPException
 
 from slop import gemini
 from slop.audio import insert_segment_audio
 from slop.gemini import GenerationConfig
 from slop.models import (
     Interview,
-    ModelDecodeError,
-    ModelNotFoundError,
     Segment,
     Utterance,
     get_interview,
 )
 from slop.promptflow import new_chat, tag, text
+from slop.store import (
+    ModelDecodeError,
+    ModelNotFoundError,
+)
 
 logger = logging.getLogger(__name__)
 
