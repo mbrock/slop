@@ -1,7 +1,6 @@
 import logging
 import re
 import tempfile
-import textwrap
 import xml.etree.ElementTree as ET
 from io import StringIO
 from pathlib import Path
@@ -11,31 +10,78 @@ import anyio
 from fastapi import HTTPException
 
 from slop import gemini
-from slop.gemini import (
-    Content,
-    GenerateRequest,
-    GenerationConfig,
-)
-from slop.promptflow import message
+from slop.gemini import GenerateRequest, GenerationConfig
+from slop.promptflow import ConversationBuilder, file, tag, text
 from slop.models import get_blob, save_blob, get_interview, Segment, Utterance
 
 logger = logging.getLogger(__name__)
 
 
-TRANSCRIPTION_INSTRUCTIONS = """Format your response as XML with the following structure:
+def render_transcription_instruction() -> None:
+    """Emit markup describing the expected transcription output format."""
+    with tag("instruction"):
+        text("Format your response as XML with the following structure:")
+        with tag("example"):
+            with tag("transcript"):
+                for speaker, sample_text in (
+                    ("S1", "Hello, how are you?"),
+                    ("S2", "I'm doing great, thanks."),
+                ):
+                    with tag("sentence", speaker=speaker):
+                        text(sample_text)
+        with tag("guidelines"):
+            for index, guideline in enumerate(
+                (
+                    "Use speaker IDs like S1, S2, etc. Ensure S1 is the interviewer.",
+                    (
+                        "Keep natural sentence breaks - a sentence can be a single "
+                        "word or exclamation."
+                    ),
+                    "Output only valid XML with no extra text.",
+                    "Include the transcript element.",
+                    (
+                        "The content is vetted for safety. You may omit prohibited "
+                        "content but it shouldn't be necessary for these "
+                        "ethnographic interviews."
+                    ),
+                ),
+                start=1,
+            ):
+                with tag("item", number=str(index)):
+                    text(guideline)
 
-<transcript>
-  <sentence speaker="S1">Hello, how are you?</sentence>
-  <sentence speaker="S2">I'm doing great, thanks.</sentence>
-</transcript>
 
-Guidelines:
-1. Use speaker IDs like S1, S2, etc. Ensure S1 is the interviewer.
-2. Keep natural sentence breaks - a sentence can be a single word or exclamation.
-3. Output only valid XML with no extra text.
-4. Include the transcript element.
-5. The content is vetted for safety. You may omit prohibited content but it shouldn't be necessary for these ethnographic interviews.
-"""
+def render_speaker_instruction(hint: str | None) -> None:
+    """Emit markup guiding the speaker identification improvement request."""
+    with tag("instruction"):
+        text("Please improve the speaker identification in this segment.")
+        if hint:
+            with tag("hint"):
+                text(hint)
+
+        text("Format your response as XML with the following structure:")
+        with tag("example"):
+            with tag("transcript", segment="current"):
+                with tag("sentence", speaker="S1"):
+                    text("Hello, how are you?")
+                with tag("sentence", speaker="S2"):
+                    text("I'm doing great, thanks.")
+
+        with tag("guidelines"):
+            for index, guideline in enumerate(
+                (
+                    "Use speaker IDs like S1, S2, etc.",
+                    "Consider voice characteristics and context from previous segments.",
+                    (
+                        "Be intelligent about speaker identification based on the "
+                        "context and conversation."
+                    ),
+                    "Include the transcript element with 'segment=\"current\"' attribute.",
+                ),
+                start=1,
+            ):
+                with tag("item", number=str(index)):
+                    text(guideline)
 
 
 async def transcribe_audio_segment(
@@ -117,8 +163,8 @@ async def transcribe_audio_segment(
         display_name=f"segment_{start_time}",
     )
 
-    # Build a multi-turn conversation.
-    conversation: list[Content] = []
+    # Build a multi-turn conversation using promptflow helpers.
+    conversation = ConversationBuilder()
 
     # Add each context segment as a separate conversation turn pair.
     if context_segments:
@@ -141,31 +187,28 @@ async def transcribe_audio_segment(
                 display_name=f"context_segment_{i}_{prev_segment.start_time}",
             )
 
-            with message(role="user") as user_turn:
+            with conversation.user_turn():
                 if i == 0:
-                    user_turn.raw(TRANSCRIPTION_INSTRUCTIONS)
-                with user_turn.tag("audio"):
-                    user_turn.file(prev_file, mime_type="audio/ogg")
-            conversation.append(user_turn.to_content())
+                    render_transcription_instruction()
+                with tag("audio"):
+                    file(prev_file, mime_type="audio/ogg")
 
-            with message(role="model") as model_turn:
-                with model_turn.tag("transcript"):
+            with conversation.model_turn():
+                with tag("transcript"):
                     for utterance in prev_segment.utterances:
-                        with model_turn.tag("sentence", speaker=utterance.speaker):
-                            model_turn.text(utterance.text, indent=True)
-            conversation.append(model_turn.to_content())
+                        with tag("sentence", speaker=utterance.speaker):
+                            text(utterance.text, indent=True)
 
     # Finally, add the current segment as the latest user turn.
-    with message(role="user") as current_turn:
+    with conversation.user_turn():
         if not context_segments:
-            current_turn.raw(TRANSCRIPTION_INSTRUCTIONS)
-        with current_turn.tag("audio"):
-            current_turn.file(current_file, mime_type="audio/ogg")
-    conversation.append(current_turn.to_content())
+            render_transcription_instruction()
+        with tag("audio"):
+            file(current_file, mime_type="audio/ogg")
 
     # Request transcription; the model should now respond with a transcript only for the current audio.
     request = GenerateRequest(
-        contents=conversation,
+        contents=conversation.to_contents(),
         generationConfig=GenerationConfig(temperature=0.1),
     )
     response = await gemini.generate_content_sync(request)
@@ -214,13 +257,15 @@ async def improve_speaker_identification_segment(
     Returns:
         List of utterances with improved speaker assignments
     """
-    file = await gemini.upload_bytes(
+    segment_file = await gemini.upload_bytes(
         segment_audio,
         mime_type="audio/ogg",
         display_name="segment_to_improve",
     )
 
-    with message(role="user") as prompt:
+    prompt = ConversationBuilder()
+
+    with prompt.user_turn():
         # Include previous segments as context
         if context_segments:
             for i, prev_segment in enumerate(context_segments):
@@ -242,47 +287,28 @@ async def improve_speaker_identification_segment(
                     display_name=f"context_segment_{i}_{prev_segment.start_time}",
                 )
 
-                with prompt.tag("audio", segment=str(i)):
-                    prompt.file(prev_file, mime_type="audio/ogg")
+                with tag("audio", segment=str(i)):
+                    file(prev_file, mime_type="audio/ogg")
 
-                with prompt.tag("transcript", segment=str(i)):
+                with tag("transcript", segment=str(i)):
                     for utterance in prev_segment.utterances:
-                        with prompt.tag("sentence", speaker=utterance.speaker):
-                            prompt.text(utterance.text, indent=True)
+                        with tag("sentence", speaker=utterance.speaker):
+                            text(utterance.text, indent=True)
 
         # Add current segment with its current transcription
-        with prompt.tag("audio", segment="current"):
-            prompt.file(file, mime_type="audio/ogg")
+        with tag("audio", segment="current"):
+            file(segment_file, mime_type="audio/ogg")
 
-        with prompt.tag("transcript", segment="current"):
+        with tag("transcript", segment="current"):
             for utterance in current_utterances:
-                with prompt.tag("sentence", speaker=utterance.speaker):
-                    prompt.text(utterance.text, indent=True)
+                with tag("sentence", speaker=utterance.speaker):
+                    text(utterance.text, indent=True)
 
-        prompt.raw(
-            textwrap.dedent(
-                f"""Please improve the speaker identification in this segment.
-{f"User hint about the speakers: {hint}" if hint else ""}
-
-Format your response as XML with the following structure:
-
-<transcript segment="current">
-<sentence speaker="S1">Hello, how are you?</sentence>
-<sentence speaker="S2">I'm doing great, thanks.</sentence>
-</transcript>
-
-Guidelines:
-1. Use speaker IDs like S1, S2, etc.
-2. Consider voice characteristics and context from previous segments.
-3. Be intelligent about speaker identification based on the context and conversation.
-4. Include the transcript element with 'segment="current"' attribute.
-"""
-            )
-        )
+        render_speaker_instruction(hint)
 
     # Request improved speaker identification
     request = GenerateRequest(
-        contents=[prompt.to_content()],
+        contents=prompt.to_contents(),
         generationConfig=GenerationConfig(temperature=0.1),
     )
     response = await gemini.generate_content_sync(request)

@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from html import escape as html_escape
-from typing import Iterable, Iterator, Mapping
+from typing import ContextManager, Iterable, Iterator, Mapping
 
 from slop.gemini import Content, File, FileData, Part
+
+
+# Mirrors TagFlow's global context tracking so helper functions can operate
+# without passing the builder around explicitly.
+_current_builder: ContextVar[GeminiMessageBuilder | None]
+_current_builder = ContextVar("promptflow_current_builder")
 
 
 def _escape_text(value: str) -> str:
@@ -29,6 +36,7 @@ class GeminiMessageBuilder:
         "_indent_level",
         "_parts",
         "_buffer",
+        "_context_tokens",
     )
 
     def __init__(
@@ -44,15 +52,20 @@ class GeminiMessageBuilder:
         self._indent_level = 0
         self._parts: list[Part] = []
         self._buffer: list[str] = []
+        self._context_tokens: list[Token[GeminiMessageBuilder | None]] = []
 
     # ------------------------------------------------------------------
     # context manager protocol
     # ------------------------------------------------------------------
     def __enter__(self) -> "GeminiMessageBuilder":  # pragma: no cover - convenience
+        token = _current_builder.set(self)
+        self._context_tokens.append(token)
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:  # pragma: no cover - convenience
         self._flush_text()
+        token = self._context_tokens.pop()
+        _current_builder.reset(token)
 
     # ------------------------------------------------------------------
     # public API
@@ -221,6 +234,88 @@ class GeminiMessageBuilder:
             self._parts[-1].text = existing + text
         else:
             self._parts.append(Part(text=text))
+
+
+def _require_builder() -> GeminiMessageBuilder:
+    builder = _current_builder.get(None)
+    if builder is None:
+        raise RuntimeError("No active GeminiMessageBuilder context")
+    return builder
+
+
+@contextmanager
+def tag(
+    name: str,
+    attrs: Mapping[str, object] | None = None,
+    **extra_attrs: object,
+) -> Iterator[GeminiMessageBuilder]:
+    builder = _require_builder()
+    with builder.tag(name, attrs, **extra_attrs) as ctx_builder:
+        yield ctx_builder
+
+
+def text(value: str | None, *, escape: bool = True, indent: bool = False) -> None:
+    _require_builder().text(value, escape=escape, indent=indent)
+
+
+def raw(value: str | None) -> None:
+    _require_builder().raw(value)
+
+
+def line(value: str | None = "", *, escape: bool = True) -> None:
+    _require_builder().line(value, escape=escape)
+
+
+def blank_line() -> None:
+    _require_builder().blank_line()
+
+
+def file(file: File | FileData | str, *, mime_type: str | None = None) -> None:
+    _require_builder().file(file, mime_type=mime_type)
+
+
+def extend(parts: Iterable[Part]) -> None:
+    _require_builder().extend(parts)
+
+
+def append_part(part: Part) -> None:
+    _require_builder().append_part(part)
+
+
+class ConversationBuilder:
+    """Utility for collecting Gemini conversation turns via context managers."""
+
+    __slots__ = ("_auto_format", "_indent", "_contents")
+
+    def __init__(self, *, auto_format: bool = True, indent: str = "  ") -> None:
+        self._auto_format = auto_format
+        self._indent = indent
+        self._contents: list[Content] = []
+
+    @contextmanager
+    def turn(self, role: str) -> Iterator[GeminiMessageBuilder]:
+        builder = message(role=role, auto_format=self._auto_format, indent=self._indent)
+        with builder:
+            yield builder
+        self._contents.append(builder.to_content())
+
+    def user_turn(self) -> ContextManager[GeminiMessageBuilder]:
+        return self.turn("user")
+
+    def model_turn(self) -> ContextManager[GeminiMessageBuilder]:
+        return self.turn("model")
+
+    def append(self, content: Content) -> None:
+        self._contents.append(content)
+
+    def extend(self, contents: Iterable[Content]) -> None:
+        self._contents.extend(contents)
+
+    def to_contents(self) -> list[Content]:
+        return list(self._contents)
+
+    def __iter__(self) -> Iterator[Content]:
+        return iter(self._contents)
 
 
 def message(
