@@ -1,0 +1,240 @@
+"""Utilities for composing Gemini message content with a TagFlow-inspired API."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from html import escape as html_escape
+from typing import Iterable, Iterator, Mapping
+
+from slop.gemini import Content, File, FileData, Part
+
+
+def _escape_text(value: str) -> str:
+    """Escape XML-special characters inside element text."""
+    return html_escape(value, quote=False)
+
+
+def _escape_attr(value: object) -> str:
+    """Escape XML-special characters inside attribute values."""
+    return html_escape(str(value), quote=True)
+
+
+class GeminiMessageBuilder:
+    """Helper for building Gemini message parts with XML-friendly utilities."""
+
+    __slots__ = (
+        "role",
+        "_auto_format",
+        "_indent",
+        "_indent_level",
+        "_parts",
+        "_buffer",
+    )
+
+    def __init__(
+        self,
+        *,
+        role: str | None,
+        auto_format: bool = True,
+        indent: str = "  ",
+    ) -> None:
+        self.role = role
+        self._auto_format = auto_format
+        self._indent = indent
+        self._indent_level = 0
+        self._parts: list[Part] = []
+        self._buffer: list[str] = []
+
+    # ------------------------------------------------------------------
+    # context manager protocol
+    # ------------------------------------------------------------------
+    def __enter__(self) -> "GeminiMessageBuilder":  # pragma: no cover - convenience
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # pragma: no cover - convenience
+        self._flush_text()
+
+    # ------------------------------------------------------------------
+    # public API
+    # ------------------------------------------------------------------
+    def text(self, value: str | None, *, escape: bool = True, indent: bool = False) -> None:
+        """Append raw text to the current buffer.
+
+        Args:
+            value: The text to append. `None` is ignored for convenience.
+            escape: Escape XML characters (defaults to True).
+            indent: If auto-formatting is enabled, indent this line to the current level.
+        """
+        if not value:
+            return
+        text_value = _escape_text(value) if escape else value
+        if self._auto_format and indent:
+            self._append_indent(self._indent_level)
+        self._buffer.append(text_value)
+
+    def raw(self, value: str | None) -> None:
+        """Append raw (unescaped) text."""
+        self.text(value, escape=False)
+
+    def line(self, value: str | None = "", *, escape: bool = True) -> None:
+        """Append a line of text, respecting indentation when auto-formatting."""
+        if value is None:
+            value = ""
+        if self._auto_format:
+            self._append_indent(self._indent_level)
+        text_value = _escape_text(value) if escape else value
+        self._buffer.append(text_value + "\n")
+
+    def blank_line(self) -> None:
+        """Insert an empty line respecting indentation."""
+        if self._auto_format:
+            self._append_indent(self._indent_level)
+        self._buffer.append("\n")
+
+    @contextmanager
+    def tag(
+        self,
+        name: str,
+        attrs: Mapping[str, object] | None = None,
+        **extra_attrs: object,
+    ) -> Iterator["GeminiMessageBuilder"]:
+        """Context manager that wraps content in opening and closing XML tags."""
+        attributes = dict(attrs or {})
+        attributes.update(extra_attrs)
+        attr_fragment = "".join(
+            f' {key}="{_escape_attr(value)}"' for key, value in attributes.items()
+        )
+        self._write_line(f"<{name}{attr_fragment}>")
+        self._indent_level += 1
+        try:
+            yield self
+        finally:
+            self._indent_level = max(0, self._indent_level - 1)
+            self._write_line(f"</{name}>")
+
+    def file(
+        self,
+        file: File | FileData | str,
+        *,
+        mime_type: str | None = None,
+    ) -> None:
+        """Insert a file reference as its own part, keeping XML tags around it."""
+        file_data: FileData
+        if isinstance(file, FileData):
+            file_data = (
+                file.model_copy(update={"mimeType": mime_type})
+                if mime_type
+                else file.model_copy()
+            )
+        elif isinstance(file, File):
+            file_data = FileData(
+                fileUri=file.uri,
+                mimeType=mime_type or file.mimeType,
+            )
+        elif isinstance(file, str):
+            file_data = FileData(fileUri=file, mimeType=mime_type)
+        else:  # pragma: no cover - defensive programming
+            raise TypeError(
+                "file must be a File, FileData, or file URI string"
+            )
+
+        if self._auto_format:
+            self._append_indent(self._indent_level)
+        self._flush_text()
+        self._parts.append(Part(fileData=file_data))
+        if self._auto_format:
+            # ensure following text starts on a new line
+            self._buffer.append("\n")
+
+    def extend(self, parts: Iterable[Part]) -> None:
+        """Extend the builder with prebuilt parts."""
+        self._flush_text()
+        for part in parts:
+            if part.text:
+                self._append_part_text(part.text)
+            else:
+                self._parts.append(part)
+
+    def append_part(self, part: Part) -> None:
+        """Append an already constructed part."""
+        self.extend([part])
+
+    def parts(self) -> list[Part]:
+        """Return the assembled list of parts."""
+        self._flush_text()
+        return list(self._parts)
+
+    def to_content(self, role: str | None = None) -> Content:
+        """Convert the builder into a Gemini Content object."""
+        final_role = role or self.role
+        if not final_role:
+            raise ValueError("A role must be provided to build Content")
+        return Content(role=final_role, parts=self.parts())
+
+    # ------------------------------------------------------------------
+    # internal helpers
+    # ------------------------------------------------------------------
+    def _write_line(self, line: str, *, indent_level: int | None = None) -> None:
+        indent = self._indent_level if indent_level is None else indent_level
+        if self._auto_format:
+            self._append_indent(indent)
+            self._buffer.append(line + "\n")
+        else:
+            self._buffer.append(line + "\n")
+
+    def _append_indent(self, indent_level: int) -> None:
+        if not self._auto_format:
+            return
+        if self._needs_newline():
+            self._buffer.append("\n")
+        if indent_level:
+            self._buffer.append(self._indent * indent_level)
+
+    def _needs_newline(self) -> bool:
+        last_char = self._last_character()
+        return bool(last_char and last_char != "\n")
+
+    def _last_character(self) -> str | None:
+        if self._buffer:
+            for chunk in reversed(self._buffer):
+                if chunk:
+                    return chunk[-1]
+        for part in reversed(self._parts):
+            if part.text:
+                text = part.text
+                if text:
+                    return text[-1]
+        return None
+
+    def _flush_text(self) -> None:
+        if not self._buffer:
+            return
+        text = "".join(self._buffer)
+        self._buffer.clear()
+        if not text:
+            return
+        self._append_part_text(text)
+
+    def _append_part_text(self, text: str) -> None:
+        if self._parts and self._parts[-1].text is not None:
+            existing = self._parts[-1].text or ""
+            self._parts[-1].text = existing + text
+        else:
+            self._parts.append(Part(text=text))
+
+
+def message(
+    *,
+    role: str = "user",
+    auto_format: bool = True,
+    indent: str = "  ",
+) -> GeminiMessageBuilder:
+    """Convenience factory for `with message(...) as prompt:` usage."""
+    return GeminiMessageBuilder(role=role, auto_format=auto_format, indent=indent)
+
+
+def parts_builder(
+    *, auto_format: bool = True, indent: str = "  "
+) -> GeminiMessageBuilder:
+    """Create a builder when only individual parts (no role) are required."""
+    return GeminiMessageBuilder(role=None, auto_format=auto_format, indent=indent)

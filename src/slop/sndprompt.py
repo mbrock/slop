@@ -1,6 +1,7 @@
 import logging
 import re
 import tempfile
+import textwrap
 import xml.etree.ElementTree as ET
 from io import StringIO
 from pathlib import Path
@@ -12,11 +13,10 @@ from fastapi import HTTPException
 from slop import gemini
 from slop.gemini import (
     Content,
-    FileData,
     GenerateRequest,
     GenerationConfig,
-    Part,
 )
+from slop.promptflow import message
 from slop.models import get_blob, save_blob, get_interview, Segment, Utterance
 
 logger = logging.getLogger(__name__)
@@ -123,79 +123,45 @@ async def transcribe_audio_segment(
     # Add each context segment as a separate conversation turn pair.
     if context_segments:
         for i, prev_segment in enumerate(context_segments):
-            if prev_segment.audio_hash:
-                prev_blob = get_blob(prev_segment.audio_hash)
-                if not prev_blob:
-                    logger.warning(
-                        "Missing audio blob for previous segment %s",
-                        prev_segment.audio_hash,
-                    )
-                    continue
-                prev_audio_data, _ = prev_blob
-                prev_file = await gemini.upload_bytes(
-                    prev_audio_data,
-                    mime_type="audio/ogg",
-                    display_name=f"context_segment_{i}_{prev_segment.start_time}",
-                )
-                # For the very first turn, include transcription instructions.
-                if i == 0:
-                    conversation.append(
-                        Content(
-                            role="user",
-                            parts=[
-                                Part(text=TRANSCRIPTION_INSTRUCTIONS),
-                                Part(text="<audio>"),
-                                Part(
-                                    fileData=FileData(
-                                        fileUri=prev_file.uri, mimeType="audio/ogg"
-                                    )
-                                ),
-                                Part(text="</audio>"),
-                            ],
-                        )
-                    )
-                else:
-                    conversation.append(
-                        Content(
-                            role="user",
-                            parts=[
-                                Part(text="<audio>"),
-                                Part(
-                                    fileData=FileData(
-                                        fileUri=prev_file.uri, mimeType="audio/ogg"
-                                    )
-                                ),
-                                Part(text="</audio>"),
-                            ],
-                        )
-                    )
+            if not prev_segment.audio_hash:
+                continue
 
-                # Now include the known transcript as the assistant's reply.
-                transcript_xml = (
-                    "<transcript>"
-                    + "".join(
-                        f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
-                        for u in prev_segment.utterances
-                    )
-                    + "</transcript>"
+            prev_blob = get_blob(prev_segment.audio_hash)
+            if not prev_blob:
+                logger.warning(
+                    "Missing audio blob for previous segment %s",
+                    prev_segment.audio_hash,
                 )
-                conversation.append(
-                    Content(role="model", parts=[Part(text=transcript_xml)])
-                )
+                continue
+
+            prev_audio_data, _ = prev_blob
+            prev_file = await gemini.upload_bytes(
+                prev_audio_data,
+                mime_type="audio/ogg",
+                display_name=f"context_segment_{i}_{prev_segment.start_time}",
+            )
+
+            with message(role="user") as user_turn:
+                if i == 0:
+                    user_turn.raw(TRANSCRIPTION_INSTRUCTIONS)
+                with user_turn.tag("audio"):
+                    user_turn.file(prev_file, mime_type="audio/ogg")
+            conversation.append(user_turn.to_content())
+
+            with message(role="model") as model_turn:
+                with model_turn.tag("transcript"):
+                    for utterance in prev_segment.utterances:
+                        with model_turn.tag("sentence", speaker=utterance.speaker):
+                            model_turn.text(utterance.text, indent=True)
+            conversation.append(model_turn.to_content())
 
     # Finally, add the current segment as the latest user turn.
-    conversation.append(
-        Content(
-            role="user",
-            parts=[
-                # Add transcription instructions if this is the first and only turn
-                *([] if context_segments else [Part(text=TRANSCRIPTION_INSTRUCTIONS)]),
-                Part(text="<audio>"),
-                Part(fileData=FileData(fileUri=current_file.uri, mimeType="audio/ogg")),
-                Part(text="</audio>"),
-            ],
-        )
-    )
+    with message(role="user") as current_turn:
+        if not context_segments:
+            current_turn.raw(TRANSCRIPTION_INSTRUCTIONS)
+        with current_turn.tag("audio"):
+            current_turn.file(current_file, mime_type="audio/ogg")
+    conversation.append(current_turn.to_content())
 
     # Request transcription; the model should now respond with a transcript only for the current audio.
     request = GenerateRequest(
@@ -254,12 +220,13 @@ async def improve_speaker_identification_segment(
         display_name="segment_to_improve",
     )
 
-    parts = []
+    with message(role="user") as prompt:
+        # Include previous segments as context
+        if context_segments:
+            for i, prev_segment in enumerate(context_segments):
+                if not prev_segment.audio_hash:
+                    continue
 
-    # Include previous segments as context
-    if context_segments:
-        for i, prev_segment in enumerate(context_segments):
-            if prev_segment.audio_hash:
                 prev_blob = get_blob(prev_segment.audio_hash)
                 if not prev_blob:
                     logger.warning(
@@ -267,44 +234,34 @@ async def improve_speaker_identification_segment(
                         prev_segment.audio_hash,
                     )
                     continue
+
                 prev_audio_data, _ = prev_blob
                 prev_file = await gemini.upload_bytes(
                     prev_audio_data,
                     mime_type="audio/ogg",
                     display_name=f"context_segment_{i}_{prev_segment.start_time}",
                 )
-                parts.append(Part(text=f'<audio segment="{i}">'))
-                parts.append(
-                    Part(fileData=FileData(fileUri=prev_file.uri, mimeType="audio/ogg"))
-                )
-                parts.append(Part(text="</audio>"))
-                parts.append(Part(text=f'<transcript segment="{i}">'))
-                parts.append(
-                    Part(
-                        text="".join(
-                            f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
-                            for u in prev_segment.utterances
-                        )
-                    )
-                )
-                parts.append(Part(text="</transcript>"))
 
-    # Add current segment with its current transcription
-    parts.extend(
-        [
-            Part(text='<audio segment="current">'),
-            Part(fileData=FileData(fileUri=file.uri, mimeType="audio/ogg")),
-            Part(text="</audio>"),
-            Part(
-                text='<transcript segment="current">\n'
-                + "".join(
-                    f'<sentence speaker="{u.speaker}">{u.text}</sentence>'
-                    for u in current_utterances
-                )
-                + "\n</transcript>"
-            ),
-            Part(
-                text=f"""Please improve the speaker identification in this segment.
+                with prompt.tag("audio", segment=str(i)):
+                    prompt.file(prev_file, mime_type="audio/ogg")
+
+                with prompt.tag("transcript", segment=str(i)):
+                    for utterance in prev_segment.utterances:
+                        with prompt.tag("sentence", speaker=utterance.speaker):
+                            prompt.text(utterance.text, indent=True)
+
+        # Add current segment with its current transcription
+        with prompt.tag("audio", segment="current"):
+            prompt.file(file, mime_type="audio/ogg")
+
+        with prompt.tag("transcript", segment="current"):
+            for utterance in current_utterances:
+                with prompt.tag("sentence", speaker=utterance.speaker):
+                    prompt.text(utterance.text, indent=True)
+
+        prompt.raw(
+            textwrap.dedent(
+                f"""Please improve the speaker identification in this segment.
 {f"User hint about the speakers: {hint}" if hint else ""}
 
 Format your response as XML with the following structure:
@@ -320,13 +277,12 @@ Guidelines:
 3. Be intelligent about speaker identification based on the context and conversation.
 4. Include the transcript element with 'segment="current"' attribute.
 """
-            ),
-        ]
-    )
+            )
+        )
 
     # Request improved speaker identification
     request = GenerateRequest(
-        contents=[Content(role="user", parts=parts)],
+        contents=[prompt.to_content()],
         generationConfig=GenerationConfig(temperature=0.1),
     )
     response = await gemini.generate_content_sync(request)
