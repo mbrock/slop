@@ -19,7 +19,6 @@ from fastapi import (
 )
 from fastapi.responses import RedirectResponse, StreamingResponse
 from tagflow import (
-    Live,
     TagResponse,
     attr,
     classes,
@@ -46,9 +45,6 @@ from slop.sndprompt import (
 from slop.views import speaker_classes, upload_area
 
 logger = logging.getLogger("slop.transcribe")
-
-# Initialize Live instance for WebSocket support
-live = Live()
 
 
 MODEL_CHOICES = [
@@ -89,7 +85,6 @@ def layout(title: str):
                 pass
             with tag.script(src="https://unpkg.com/hyperscript.org@0.9.12"):
                 pass
-            live.script_tag()
 
             # Add key tracking script
             with tag.script():
@@ -274,7 +269,7 @@ async def upload_audio(audio: UploadFile):
         finally:
             tmp_path.unlink()
 
-    render_home()
+    await render_home()
 
 
 def svg_icons():

@@ -1,14 +1,11 @@
 import hashlib
 import logging
 import os
-from contextlib import contextmanager
-from contextvars import ContextVar, Token
 from enum import Enum
 from pathlib import Path
 from typing import (
     Any,
     AsyncIterator,
-    Callable,
     Literal,
 )
 
@@ -17,51 +14,11 @@ import rich
 from httpx_sse import ServerSentEvent, aconnect_sse
 from pydantic import BaseModel, Field
 
+from slop.parameter import Parameter
+
 logger = logging.getLogger(__name__)
 
 base_url = "https://generativelanguage.googleapis.com"
-
-
-class Parameter[T]:
-    """Wrapper around :class:`contextvars.ContextVar` with convenience helpers."""
-
-    def __init__(
-        self,
-        name: str,
-        *,
-        default_factory: Callable[[], T] | None = None,
-    ):
-        self._var: ContextVar[T] = ContextVar(name)
-        self._default_factory = default_factory
-
-    def get(self) -> T:
-        try:
-            return self._var.get()
-        except LookupError as exc:
-            if self._default_factory is None:
-                raise RuntimeError(
-                    f"No value set for parameter '{self._var.name}'"
-                ) from exc
-            value = self._default_factory()
-            self._var.set(value)
-            return value
-
-    def set(self, value: T) -> Token:
-        return self._var.set(value)
-
-    def reset(self, token: Token) -> None:
-        self._var.reset(token)
-
-    @contextmanager
-    def using(self, value: T):
-        token = self.set(value)
-        try:
-            yield value
-        finally:
-            self.reset(token)
-
-
-# Context-managed client helpers -------------------------------------------------
 
 http_client = Parameter[httpx.AsyncClient]("gemini_http_client")
 model = Parameter[str]("gemini_model")
@@ -608,39 +565,38 @@ async def generate_content_sync(
 
 # Example usage:
 async def main():
-    with model.using("gemini-2.5-flash-lite"):
-        with api_key.using(os.getenv("GOOGLE_API_KEY")):
-            async with httpx.AsyncClient() as client:
-                with http_client.using(client):
-                    # Upload the audio file
-                    file = await upload_file(
-                        "media/interview.ogg", display_name="Interview Audio"
-                    )
-                    print(f"Uploaded file: {file.name}")
+    async with httpx.AsyncClient() as client:
+        with (
+            http_client.using(client),
+            model.using("gemini-2.5-flash-lite"),
+            api_key.using_env("GOOGLE_API_KEY"),
+        ):
+            file = await upload_file(
+                "media/interview.ogg", display_name="Interview Audio"
+            )
+            print(f"Uploaded file: {file.name}")
 
-                    # Request transcription
-                    request = GenerateRequest(
-                        contents=[
-                            Content(
-                                role="user",
-                                parts=[
-                                    Part(
-                                        text="""Please transcribe this audio file. Use HTML with elements like <span data-speaker="S1 | S2 | ..." data-time="hh:mm:ss"> for each utterance. Use dashes (—), ellipses (…), and light editing for an accurate transcript with typographic care. Write disfluencies like "it's— well— you know—"."""
-                                    ),
-                                    Part(fileData=FileData(fileUri=file.uri)),
-                                ],
-                            )
+            request = GenerateRequest(
+                contents=[
+                    Content(
+                        role="user",
+                        parts=[
+                            Part(
+                                text="""Please transcribe this audio file. Use HTML with elements like <span data-speaker="S1 | S2 | ..." data-time="hh:mm:ss"> for each utterance. Use dashes (—), ellipses (…), and light editing for an accurate transcript with typographic care. Write disfluencies like "it's— well— you know—"."""
+                            ),
+                            Part(fileData=FileData(fileUri=file.uri)),
                         ],
                     )
+                ],
+            )
 
-                    # Generate transcription
-                    print("\nTranscription:")
-                    async for response in generate_content(request):
-                        print(response.candidates[0].content.parts[0].text, end="")
-                    print()
+            print("\nTranscription:")
+            async for response in generate_content(request):
+                print(response.candidates[0].content.parts[0].text, end="")
+            print()
 
-                    # Clean up
-                    await delete_file(file.name)
+            # Clean up
+            await delete_file(file.name)
 
 
 if __name__ == "__main__":

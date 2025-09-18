@@ -1,12 +1,8 @@
 """Shared Parameter class for context-based configuration."""
 
-import logging
+import os
+from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Callable, TypeVar
-
-logger = logging.getLogger("parameter")
-
-T = TypeVar("T")
 
 
 class Parameter[T]:
@@ -15,32 +11,27 @@ class Parameter[T]:
     def __init__(
         self,
         name: str,
-        *,
-        default_factory: Callable[[], T] | None = None,
     ):
         self._var: ContextVar[T] = ContextVar(name)
-        self._default_factory = default_factory
 
     def get(self) -> T:
-        try:
-            return self._var.get()
-        except LookupError as exc:
-            if self._default_factory is None:
-                raise RuntimeError(f"Parameter {self._var.name} not set") from exc
-            return self._default_factory()
+        return self._var.get()
 
+    @contextmanager
     def using(self, value: T):
         """Context manager to temporarily set the parameter value."""
-        print(f"Setting parameter {self._var.name} to {value}")
         token = self._var.set(value)
-        var = self._var
+        try:
+            yield
+        finally:
+            self._var.reset(token)
 
-        class ParameterContext:
-            def __enter__(self):
-                return value
+    @contextmanager
+    def using_env(self, env_var: str):
+        """Context manager to set the parameter from an environment variable."""
+        value = os.getenv(env_var)
+        if value is None:
+            raise LookupError(f"missing ${env_var} in environment")
 
-            def __exit__(self, *args):
-                print(f"Resetting parameter {var.name} to previous value")
-                var.reset(token)
-
-        return ParameterContext()
+        with self.using(value):
+            yield

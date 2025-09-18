@@ -78,6 +78,16 @@ def sqlite_connection(db_path: str):
         conn.close()
 
 
+@contextmanager
+def with_databases(interviews_db_path: str, blobs_db_path: str):
+    """Context manager to set up database connections."""
+    with sqlite_connection(interviews_db_path) as interviews_conn:
+        with interviews_db.using(interviews_conn):
+            with sqlite_connection(blobs_db_path) as blobs_conn:
+                with blobs_db.using(blobs_conn):
+                    yield
+
+
 def init_databases():
     interviews_db.get().execute(
         """
