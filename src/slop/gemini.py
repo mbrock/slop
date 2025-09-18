@@ -19,6 +19,7 @@ from httpx_sse import ServerSentEvent, aconnect_sse
 from pydantic import BaseModel, Field
 
 from slop.parameter import Parameter
+from slop.store import get_blob
 
 logger = logging.getLogger(__name__)
 
@@ -480,8 +481,6 @@ async def resolve_blob_uris(contents: list[Content]) -> None:
     Modifies contents in place. Requires the uploader parameter to be set.
     """
     import anyio
-
-    from slop.models import get_blob
 
     # Collect all blob URIs and their parts
     blobs: dict[str, list[Part]] = {}

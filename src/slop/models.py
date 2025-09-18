@@ -3,13 +3,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from slop.store import (
-    find,
-    save,
-)
-from slop.store import (
-    list_models as store_list_models,
-)
+from slop.store import find, save
+from slop.store import list_models as store_list_models
 
 
 class PartitionSegment(BaseModel):

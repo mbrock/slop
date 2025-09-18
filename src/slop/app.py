@@ -2,8 +2,7 @@
 
 import inspect
 import logging
-import re
-from typing import NotRequired, TypedDict
+from typing import NoReturn, NotRequired, TypedDict
 
 from httpx import AsyncClient
 from starlette.applications import Starlette
@@ -136,11 +135,26 @@ def load_segment_index(idx: str) -> int:
 # ============================================================================
 
 
-AUDIO_PATH_RE = re.compile(r"^/audio/(?P<hash_>[^/]+)$")
-INTERVIEW_PATH_RE = re.compile(
-    r"^/interview/(?P<interview_id>[^/]+)(?P<suffix>(?:/.*)?)$"
-)
-SEGMENT_PATH_RE = re.compile(r"^/segment/(?P<segment_index>\d+)(?P<tail>(?:/.*)?)$")
+def parse_path(path: str) -> tuple[str, ...] | None:
+    """Split a request path into meaningful segments.
+
+    Returns ``None`` when the path contains unsupported constructs such as
+    trailing slashes (other than ``/`` itself) or empty segments, to mirror the
+    404 behaviour of the previous regex-based routing.
+    """
+
+    if path == "/":
+        return ()
+
+    if path.endswith("/"):
+        return None
+
+    stripped = path.lstrip("/")
+    if not stripped:
+        return ()
+
+    parts = tuple(stripped.split("/"))
+    return None if any(part == "" for part in parts) else parts
 
 
 def set_path_params(req: Request, **params) -> None:
@@ -149,7 +163,7 @@ def set_path_params(req: Request, **params) -> None:
     req.scope["path_params"] = params
 
 
-def method_not_allowed(*allowed: str) -> None:
+def method_not_allowed(*allowed: str) -> NoReturn:
     """Raise a 405 HTTP exception with the provided allowed methods."""
 
     allow_header = ", ".join(sorted({m.upper() for m in allowed}))
@@ -179,45 +193,49 @@ async def dispatch_segment(
     req: Request,
     method: str,
     interview_id: str,
-    match: re.Match[str],
+    segment_idx: str,
+    tail: tuple[str, ...],
 ) -> Response:
     """Route requests that operate on a specific interview segment."""
 
-    tail = match["tail"] or ""
-    index = load_segment_index(match["segment_index"])
+    if not segment_idx.isdigit():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    index = load_segment_index(segment_idx)
     set_path_params(req, id=interview_id, idx=index)
 
+    segment_post_routes = {
+        ("retranscribe",): (transcribe.retranscribe_segment, None),
+        ("improve-speakers",): (
+            transcribe.improve_speaker_identification,
+            HintForm,
+        ),
+        ("update-speaker",): (
+            transcribe.update_speaker,
+            UpdateSpeakerForm,
+        ),
+    }
+
     with segment_index.using(index):
-        match tail:
-            case "":
-                if method == "GET":
-                    return await call_view(transcribe.view_segment)
-                if method == "PUT":
-                    return await call_view(
-                        transcribe.update_segment, form_model=ContentForm
-                    )
-                method_not_allowed("GET", "PUT")
-            case "/edit":
-                if method != "GET":
-                    method_not_allowed("GET")
+        match (method, tail):
+            case ("GET", ()):
+                return await call_view(transcribe.view_segment)
+            case ("PUT", ()):
+                return await call_view(
+                    transcribe.update_segment,
+                    form_model=ContentForm,
+                )
+            case ("GET", ("edit",)):
                 return await call_view(transcribe.edit_segment_dialog)
-            case "/retranscribe":
-                if method != "POST":
-                    method_not_allowed("POST")
-                return await call_view(transcribe.retranscribe_segment)
-            case "/improve-speakers":
-                if method != "POST":
-                    method_not_allowed("POST")
-                return await call_view(
-                    transcribe.improve_speaker_identification,
-                    form_model=HintForm,
-                )
-            case "/update-speaker":
-                if method != "POST":
-                    method_not_allowed("POST")
-                return await call_view(
-                    transcribe.update_speaker, form_model=UpdateSpeakerForm
-                )
+            case ("POST", suffix) if suffix in segment_post_routes:
+                handler, form_model = segment_post_routes[suffix]
+                return await call_view(handler, form_model=form_model)
+            case (_, ()):
+                method_not_allowed("GET", "PUT")
+            case (_, ("edit",)):
+                method_not_allowed("GET")
+            case (_, suffix) if suffix in segment_post_routes:
+                method_not_allowed("POST")
             case _:
                 raise HTTPException(status_code=404, detail="Not found")
 
@@ -225,50 +243,56 @@ async def dispatch_segment(
 async def dispatch_interview(
     req: Request,
     method: str,
-    match: re.Match[str],
+    interview_id: str,
+    suffix: tuple[str, ...],
 ) -> Response:
     """Route requests for interview-level operations."""
 
-    interview_id = match["interview_id"]
-    suffix = match["suffix"] or ""
     interview_obj = load_interview(interview_id)
+
+    post_routes = {
+        ("transcribe-next",): (
+            transcribe.transcribe_next_segment,
+            TranscribeNextForm,
+        ),
+        ("rename",): (
+            transcribe.rename_interview,
+            RenameForm,
+        ),
+        ("context-segments",): (
+            transcribe.update_context_segments,
+            ContextSegmentsForm,
+        ),
+    }
 
     with interview.using(interview_obj):
         set_path_params(req, id=interview_id)
 
-        match suffix:
-            case "":
-                if method != "GET":
-                    method_not_allowed("GET")
+        match (method, suffix):
+            case ("GET", ()):
                 return await call_view(transcribe.view_interview)
-            case "/export":
-                if method != "GET":
-                    method_not_allowed("GET")
+            case ("GET", ("export",)):
                 return await call_view(transcribe.export_interview)
-            case "/transcribe-next":
-                if method != "POST":
-                    method_not_allowed("POST")
-                return await call_view(
-                    transcribe.transcribe_next_segment,
-                    form_model=TranscribeNextForm,
+            case ("POST", suffix_key) if suffix_key in post_routes:
+                handler, form_model = post_routes[suffix_key]
+                return await call_view(handler, form_model=form_model)
+            case (method, ("segment", segment_idx, *segment_tail)) if segment_idx.isdigit():
+                return await dispatch_segment(
+                    req,
+                    method,
+                    interview_id,
+                    segment_idx,
+                    tuple(segment_tail),
                 )
-            case "/rename":
-                if method != "POST":
-                    method_not_allowed("POST")
-                return await call_view(
-                    transcribe.rename_interview,
-                    form_model=RenameForm,
-                )
-            case "/context-segments":
-                if method != "POST":
-                    method_not_allowed("POST")
-                return await call_view(
-                    transcribe.update_context_segments,
-                    form_model=ContextSegmentsForm,
-                )
+            case (_, ()):
+                method_not_allowed("GET")
+            case (_, ("export",)):
+                method_not_allowed("GET")
+            case (_, suffix_key) if suffix_key in post_routes:
+                method_not_allowed("POST")
+            case (_, ("segment", _, *_)):
+                raise HTTPException(status_code=404, detail="Not found")
             case _:
-                if segment_match := SEGMENT_PATH_RE.fullmatch(suffix):
-                    return await dispatch_segment(req, method, interview_id, segment_match)
                 raise HTTPException(status_code=404, detail="Not found")
 
 
@@ -282,20 +306,29 @@ async def dispatch_request(req: Request) -> Response:
     path = req.url.path
     set_path_params(req)
 
-    match (method, path):
-        case ("GET", "/"):
+    segments = parse_path(path)
+    if segments is None:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    match (method, segments):
+        case ("GET", ()):
             return await call_view(transcribe.home)
-        case ("GET", "/home"):
+        case ("GET", ("home",)):
             return await call_view(transcribe.render_home_content)
-        case ("GET", "/interview-list"):
+        case ("GET", ("interview-list",)):
             return await call_view(transcribe.render_interview_list)
-        case ("GET", _path) if (match := AUDIO_PATH_RE.fullmatch(path)):
-            set_path_params(req, hash_=match["hash_"])
+        case ("GET", ("audio", hash_)):
+            set_path_params(req, hash_=hash_)
             return await call_view(transcribe.get_audio)
-        case ("POST", "/upload"):
+        case ("POST", ("upload",)):
             return await call_view(transcribe.upload_audio, form_model=AudioUploadForm)
-        case (method, _path) if (match := INTERVIEW_PATH_RE.fullmatch(path)):
-            return await dispatch_interview(req, method, match)
+        case (method, ("interview", interview_id, *suffix)):
+            return await dispatch_interview(
+                req,
+                method,
+                interview_id,
+                tuple(suffix),
+            )
         case _:
             raise HTTPException(status_code=404, detail="Not found")
 

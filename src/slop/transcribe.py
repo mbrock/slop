@@ -1,7 +1,8 @@
 import logging
 import re
 import tempfile
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable
+from contextlib import contextmanager, nullcontext
 from io import BytesIO
 from pathlib import Path
 from subprocess import PIPE
@@ -29,6 +30,7 @@ from slop.models import (
     list_interviews,
     save_interview,
 )
+from slop.parameter import Parameter
 from slop.sndprompt import (
     improve_speaker_identification_segment,
     transcribe_audio_segment,
@@ -49,6 +51,16 @@ MODEL_CHOICES = [
     "gemini-2.5-pro",
     "gemini-2.5-flash-lite",
 ]
+
+
+TranscribeSegmentCallable = Callable[
+    [str, str, str, list[Segment] | None],
+    Awaitable[tuple[list[Utterance], str]],
+]
+
+transcribe_segment_callable = Parameter[TranscribeSegmentCallable](
+    "app_transcribe_segment"
+)
 
 
 IMPROVE_SPEAKERS_ONCLICK = (
@@ -744,6 +756,7 @@ def view_interview():
     """
     interview = app.interview.get()
     interview_id = interview.id
+    default_segment_length = str(app.segment_duration_seconds.get())
 
     with layout(f"Interview - {interview.filename}"):
         with tag.div(classes="prose mx-auto"):
@@ -771,16 +784,34 @@ def view_interview():
                             ):
                                 pass
 
-                    # Transcribe button
-                    button_view(
-                        "Transcribe more",
-                        **{
-                            "hx-post": f"/interview/{interview_id}/transcribe-next",
-                            "hx-target": "#segments",
-                            "hx-swap": "beforeend",
-                            "hx-include": "#model-selector",
-                        },
-                    )
+                    with tag.div(classes="flex items-center gap-3"):
+                        with tag.form(
+                            id="transcribe-options",
+                            classes="flex items-center gap-2",
+                        ):
+                            with tag.label(classes="text-sm text-gray-600"):
+                                text("Segment length (s):")
+                            with tag.input(
+                                type="number",
+                                name="duration_seconds",
+                                min="5",
+                                max="600",
+                                step="5",
+                                value=default_segment_length,
+                                classes="w-20 px-2 py-1 text-sm border rounded",
+                            ):
+                                pass
+
+                        # Transcribe button
+                        button_view(
+                            "Transcribe more",
+                            **{
+                                "hx-post": f"/interview/{interview_id}/transcribe-next",
+                                "hx-target": "#segments",
+                                "hx-swap": "beforeend",
+                                "hx-include": "#model-selector, #transcribe-options",
+                            },
+                        )
 
 
 def get_audio():
@@ -835,10 +866,15 @@ def get_audio():
     )
 
 
-async def transcribe_next_segment():
+async def transcribe_next_segment(
+    duration_seconds: int | None = None,
+    model_name: str | None = None,
+):
     """
-    Transcribe the next audio segment (2 minutes) for the given interview.
-    Returns just the new segment as a partial view.
+    Transcribe the next audio segment for the given interview.
+
+    Optional form fields allow callers to override the segment duration (in
+    seconds) and select a Gemini model for this request.
     """
     interview = app.interview.get()
     interview_id = interview.id
@@ -851,16 +887,33 @@ async def transcribe_next_segment():
 
     # Calculate segment times
     start_time = interview.current_position
-    end_time = increment_time(start_time, seconds=60 * 2)
+    base_duration = app.segment_duration_seconds.get()
+    requested_seconds = (
+        duration_seconds if duration_seconds is not None else base_duration
+    )
+    segment_seconds = max(1, min(requested_seconds, 15 * 60))
+    end_time = increment_time(start_time, seconds=segment_seconds)
+
+    # Optionally switch the Gemini model just for this request
+    chosen_model = model_name if model_name in MODEL_CHOICES else None
+    model_context = (
+        gemini.model.using(chosen_model)
+        if chosen_model and chosen_model != gemini.model.get()
+        else nullcontext()
+    )
 
     try:
-        # Transcribe the segment
-        utterances, segment_hash = await transcribe_audio_segment(
-            interview_id,
-            start_time,
-            end_time,
-            context_segments,
-        )
+        with model_context:
+            transcribe_fn = (
+                transcribe_segment_callable.peek() or transcribe_audio_segment
+            )
+            # Transcribe the segment
+            utterances, segment_hash = await transcribe_fn(
+                interview_id,
+                start_time,
+                end_time,
+                context_segments,
+            )
 
         # Create and save the new segment
         segment = Segment(
@@ -870,8 +923,9 @@ async def transcribe_next_segment():
             utterances=utterances,
         )
 
-        # Advance current position by two minutes - 1 second
-        interview.current_position = increment_time(start_time, seconds=60 * 2 - 1)
+        # Advance current position while leaving a 1-second overlap for continuity
+        advance_seconds = max(segment_seconds - 1, 0)
+        interview.current_position = increment_time(start_time, seconds=advance_seconds)
 
         # Append segment to interview and save
         interview.segments.append(segment)

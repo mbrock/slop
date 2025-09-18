@@ -1,4 +1,6 @@
 import functools
+import os
+import sys
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable
 
@@ -7,12 +9,22 @@ import anyio.abc
 from slop.parameter import Parameter
 
 
+test_filter = Parameter[str | None]("test_filter")
+_fallback_filter = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("TEST_FILTER")
+
+
 def test[**P, R](fn: Callable[P, R]):
     name = getattr(fn, "__name__", repr(fn))
 
     @functools.wraps(fn)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        #        print(f"❐ {name}")
+        active_filter = test_filter.peek()
+        if active_filter is None:
+            active_filter = _fallback_filter
+
+        if active_filter and active_filter not in name:
+            print(f"• skipping {name} (filter '{active_filter}')")
+            return None  # type: ignore[return-value]
 
         x = fn(*args, **kwargs)
         if hasattr(x, "__await__"):

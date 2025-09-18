@@ -5,16 +5,22 @@ from io import StringIO
 
 from starlette.exceptions import HTTPException
 
-from slop import gemini
+from slop import conf
 from slop.audio import insert_segment_audio
-from slop.gemini import GenerationConfig
 from slop.models import (
     Interview,
     Segment,
     Utterance,
     get_interview,
 )
-from slop.promptflow import new_chat, tag, text
+from slop.promptflow import (
+    from_model,
+    from_user,
+    generate,
+    new_chat,
+    tag,
+    text,
+)
 from slop.store import (
     ModelDecodeError,
     ModelNotFoundError,
@@ -128,32 +134,30 @@ async def transcribe_audio_segment(
         segment = Segment(start_time=start_time, end_time=end_time)
 
     # Build a multi-turn conversation using promptflow helpers.
-    with new_chat(upload=gemini.upload) as conversation:
+    with new_chat():
         # Add each context segment as a separate conversation turn pair.
         if context_segments:
             for i, prev_segment in enumerate(context_segments):
-                with conversation.user_turn():
+                with from_user():
                     if i == 0:
                         render_transcription_instruction()
                     with tag("audio", segment=str(i)):
                         await insert_segment_audio(interview, prev_segment)
 
-                with conversation.model_turn():
+                with from_model():
                     with tag("transcript"):
                         for utterance in prev_segment.utterances:
                             with tag("sentence", speaker=utterance.speaker):
                                 text(utterance.text, indent=True)
 
-        with conversation.user_turn():
+        with from_user():
             if not context_segments:
                 render_transcription_instruction()
             with tag("audio", segment="current"):
                 await insert_segment_audio(interview, segment)
 
-    # Request transcription; the model should now respond with a transcript only for the current audio.
-    response = await conversation.complete(
-        generation_config=GenerationConfig(temperature=0.1)
-    )
+        with conf.temperature(0.1):
+            response = await generate()
 
     if not response.candidates:
         raise HTTPException(status_code=500, detail="Failed to transcribe segment")
@@ -195,8 +199,8 @@ async def improve_speaker_identification_segment(
     Returns:
         List of utterances with improved speaker assignments
     """
-    with new_chat(upload=gemini.upload) as prompt:
-        with prompt.user_turn():
+    with new_chat():
+        with from_user():
             # Include previous segments as context
             if context_segments:
                 for i, prev_segment in enumerate(context_segments):
@@ -217,9 +221,8 @@ async def improve_speaker_identification_segment(
 
             render_speaker_instruction(hint)
 
-    response = await prompt.complete(
-        generation_config=GenerationConfig(temperature=0.1)
-    )
+        with conf.temperature(0.1):
+            response = await generate()
 
     if not response.candidates:
         raise HTTPException(
