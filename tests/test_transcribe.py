@@ -1,6 +1,7 @@
 import os
+import sys
 import tempfile
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 
 import httpx
@@ -10,10 +11,9 @@ from slop.app import create_app
 from slop.models import list_interviews
 from slop.parameter import Parameter
 
-from .testing import test
+from .testing import test, test_filter
 
 current_client = Parameter[httpx.AsyncClient]("client")
-database_paths = Parameter[tuple[str, str]]("db_paths")
 
 
 @asynccontextmanager
@@ -46,7 +46,6 @@ async def appclient():
             ) as client:
                 with (
                     current_client.using(client),
-                    database_paths.using((db1, db2)),
                     store.with_databases(db1, db2),
                 ):
                     yield client
@@ -115,12 +114,57 @@ async def test_upload_audio_creates_interview():
 
 
 @test
+@appclient()
+async def test_transcribe_next_segment_integration():
+    client = current_client.get()
+    audio_path = Path("tests/data/kingcharles.mp3")
+    audio_bytes = audio_path.read_bytes()
+
+    upload_response = await client.post(
+        "/upload",
+        files={"audio": ("kingcharles.mp3", audio_bytes, "audio/mpeg")},
+    )
+    assert upload_response.status_code == 200
+
+    interviews = list_interviews()
+    assert interviews, "Upload did not create any interviews"
+    interview_id = interviews[-1].id
+
+    response = await client.post(
+        f"/interview/{interview_id}/transcribe-next",
+        data={
+            "duration_seconds": "10",
+            "model_name": "gemini-2.5-flash-lite",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    interviews = list_interviews()
+    interview = next((i for i in interviews if i.id == interview_id), None)
+    assert interview is not None
+    assert interview.segments
+
+    segment = interview.segments[-1]
+    assert segment.start_time == "00:00:00"
+    assert segment.end_time == "00:00:10"
+    assert segment.utterances
+
+
 async def main():
-    await test_home_endpoint()
-    await test_interview_list_endpoint()
-    await test_nonexistent_interview()
-    await test_nonexistent_audio()
-    await test_upload_audio_creates_interview()
+    filter_value = os.environ.get("TEST_FILTER")
+    if len(sys.argv) > 1:
+        filter_value = sys.argv[1]
+
+    context = test_filter.using(filter_value) if filter_value else nullcontext()
+
+    with context:
+        await test_home_endpoint()
+        await test_interview_list_endpoint()
+        await test_nonexistent_interview()
+        await test_nonexistent_audio()
+        await test_upload_audio_creates_interview()
+        await test_transcribe_next_segment_integration()
 
 
 if __name__ == "__main__":

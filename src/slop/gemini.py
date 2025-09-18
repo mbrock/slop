@@ -479,11 +479,6 @@ async def resolve_blob_uris(contents: list[Content]) -> None:
 
     Modifies contents in place. Requires the uploader parameter to be set.
     """
-    upload_fn = uploader.peek()
-    if not upload_fn:
-        # No uploader configured, just return
-        return
-
     import anyio
 
     from slop.models import get_blob
@@ -502,6 +497,12 @@ async def resolve_blob_uris(contents: list[Content]) -> None:
 
     if not blobs:
         return
+
+    upload_fn = uploader.peek()
+    if not upload_fn:
+        raise RuntimeError(
+            "Gemini uploader is not configured; cannot resolve blob URIs."
+        )
 
     # Upload all blobs in parallel
     uploads: dict[str, File] = {}
