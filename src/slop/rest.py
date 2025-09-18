@@ -11,7 +11,7 @@ import functools
 import inspect
 from typing import Type
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ConfigDict, TypeAdapter, ValidationError
 from starlette.exceptions import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -47,21 +47,28 @@ async def form[T](model: Type[T]) -> T:
         HTTPException: If validation fails with details about errors
     """
     req = request.get()
-    async with req.form() as form_data:
-        # Validate with TypeAdapter
+    form_data = await req.form()
+
+    config = getattr(model, "__pydantic_config__", None)
+    if not getattr(config, "arbitrary_types_allowed", False):
         try:
-            adapter = TypeAdapter(model)
-            return adapter.validate_python(form_data)
-        except ValidationError as e:
-            # Convert validation errors to HTTP 400
-            errors = []
-            for error in e.errors():
-                field = ".".join(str(loc) for loc in error["loc"])
-                msg = error["msg"]
-                errors.append(f"{field}: {msg}")
-            raise HTTPException(
-                status_code=400, detail="Validation error: " + "; ".join(errors)
-            )
+            setattr(model, "__pydantic_config__", ConfigDict(arbitrary_types_allowed=True))
+        except (AttributeError, TypeError):
+            pass
+
+    adapter = TypeAdapter(model)
+
+    try:
+        return adapter.validate_python(form_data)
+    except ValidationError as e:
+        errors = []
+        for error in e.errors():
+            field = ".".join(str(loc) for loc in error["loc"])
+            msg = error["msg"]
+            errors.append(f"{field}: {msg}")
+        raise HTTPException(
+            status_code=400, detail="Validation error: " + "; ".join(errors)
+        )
 
 
 # ============================================================================

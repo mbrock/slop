@@ -1,16 +1,19 @@
 import os
 import tempfile
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 
 from slop import store
 from slop.app import create_app
+from slop.models import list_interviews
 from slop.parameter import Parameter
 
 from .testing import test
 
 current_client = Parameter[httpx.AsyncClient]("client")
+database_paths = Parameter[tuple[str, str]]("db_paths")
 
 
 @asynccontextmanager
@@ -41,7 +44,11 @@ async def appclient():
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://test.example",
             ) as client:
-                with current_client.using(client):
+                with (
+                    current_client.using(client),
+                    database_paths.using((db1, db2)),
+                    store.with_databases(db1, db2),
+                ):
                     yield client
 
 
@@ -81,11 +88,39 @@ async def test_nonexistent_audio():
 
 
 @test
+@appclient()
+async def test_upload_audio_creates_interview():
+    audio_path = Path("tests/data/kingcharles.mp3")
+
+    client = current_client.get()
+    audio_bytes = audio_path.read_bytes()
+    response = await client.post(
+        "/upload",
+        files={"audio": ("kingcharles.mp3", audio_bytes, "audio/mpeg")},
+    )
+
+    assert response.status_code == 200
+
+    interviews = list_interviews()
+    assert len(interviews) == 1
+    interview = interviews[0]
+
+    assert interview.filename == "kingcharles.mp3"
+    assert interview.audio_hash
+    assert interview.duration == "00:05:09"
+
+    blob, mime = store.get_blob(interview.audio_hash)
+    assert mime == "audio/ogg"
+    assert len(blob) > 0
+
+
+@test
 async def main():
     await test_home_endpoint()
     await test_interview_list_endpoint()
     await test_nonexistent_interview()
     await test_nonexistent_audio()
+    await test_upload_audio_creates_interview()
 
 
 if __name__ == "__main__":
