@@ -2,14 +2,10 @@ import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from slop import gemini, conf
+from slop import conf, gemini
 from slop.gemini import (
     FileState,
-    FunctionCallingConfig,
-    FunctionDeclaration,
     GeminiError,
-    Tool,
-    ToolConfig,
 )
 from slop.promptflow import (
     file as flow_file,
@@ -80,10 +76,10 @@ async def test_list_files() -> None:
 
 @test
 async def test_function_calling() -> None:
-    weather_function = FunctionDeclaration(
-        name="get_weather",
-        description="Get the weather for a location",
-        parameters={
+    weather_function = {
+        "name": "get_weather",
+        "description": "Get the weather for a location",
+        "parameters": {
             "type": "object",
             "properties": {
                 "location": {
@@ -98,9 +94,9 @@ async def test_function_calling() -> None:
             },
             "required": ["location"],
         },
-    )
+    }
 
-    tool = Tool(functionDeclarations=[weather_function])
+    tool = {"functionDeclarations": [weather_function]}
 
     with new_chat():
         with from_user():
@@ -229,10 +225,10 @@ async def test_thinking_dynamic() -> None:
 
 @test
 async def test_thinking_with_function_calling() -> None:
-    math_function = FunctionDeclaration(
-        name="calculate",
-        description="Perform a mathematical calculation",
-        parameters={
+    math_function = {
+        "name": "calculate",
+        "description": "Perform a mathematical calculation",
+        "parameters": {
             "type": "object",
             "properties": {
                 "expression": {
@@ -242,9 +238,9 @@ async def test_thinking_with_function_calling() -> None:
             },
             "required": ["expression"],
         },
-    )
+    }
 
-    tool = Tool(functionDeclarations=[math_function])
+    tool = {"functionDeclarations": [math_function]}
 
     with new_chat():
         with from_user():
@@ -305,18 +301,17 @@ async def use_gemini():
 @scope()
 async def main():
     spawn(test_thinking_multi_turn)
-    # spawn(test_thinking_basic)
-    # spawn(test_thinking_dynamic)
-    # spawn(test_thinking_with_function_calling)
-
-    # spawn(test_file_upload_and_processing)
+    spawn(test_thinking_basic)
+    spawn(test_thinking_dynamic)
+    spawn(test_thinking_with_function_calling)
+    spawn(test_file_upload_and_processing)
     spawn(test_basic_text_generation)
     spawn(test_streaming_response)
-    # spawn(test_list_files)
-    # spawn(test_function_calling)
-    # spawn(test_multi_turn_conversation)
-    # spawn(test_invalid_model)
-    # spawn(test_thinking_disabled)
+    spawn(test_list_files)
+    spawn(test_function_calling)
+    spawn(test_multi_turn_conversation)
+    spawn(test_invalid_model)
+    spawn(test_thinking_disabled)
 
 
 if __name__ == "__main__":

@@ -18,11 +18,11 @@ def _merge_config(**kwargs: Any) -> GenerationConfig:
     current = gemini.generation_config.peek()
     if current:
         # Create a copy and update with new values
-        config_dict = current.model_dump(exclude_none=True)
+        config_dict = dict(current)
         config_dict.update(kwargs)
-        return GenerationConfig(**config_dict)
+        return config_dict  # type: ignore
     else:
-        return GenerationConfig(**kwargs)
+        return kwargs  # type: ignore
 
 
 @contextmanager
@@ -81,9 +81,10 @@ def thinking(include_thoughts: bool = True, budget: int | None = None):
         include_thoughts: Whether to include thought summaries in response
         budget: Thought token budget (0=disabled, -1=dynamic, >0=fixed)
     """
-    thinking_config = ThinkingConfig(
-        includeThoughts=include_thoughts, thinkingBudget=budget
-    )
+    thinking_config: ThinkingConfig = {
+        "includeThoughts": include_thoughts,
+        "thinkingBudget": budget,
+    }
     config = _merge_config(thinkingConfig=thinking_config)
     with gemini.generation_config.using(config):
         yield
@@ -107,11 +108,11 @@ def tool_config(
         mode: "ANY", "AUTO", or "NONE"
         allowed_functions: Optional list of allowed function names
     """
-    config = ToolConfig(
-        functionCallingConfig=FunctionCallingConfig(
-            mode=mode, allowedFunctionNames=allowed_functions
-        )
-    )
+    func_config: FunctionCallingConfig = {
+        "mode": mode,
+        "allowedFunctionNames": allowed_functions,
+    }
+    config: ToolConfig = {"functionCallingConfig": func_config}
     with gemini.tool_config.using(config):
         yield
 

@@ -9,13 +9,25 @@
 - **FastAPI + TagFlow UI (`src/slop/transcribe.py`)** renders HTML through Python context managers and serves HTMX interactions for uploads, segment editing, and progress updates.
 - **Gemini integration (`src/slop/gemini.py`)** wraps the Google Generative Language API for audio uploads, content generation, and streaming responses; includes resumable uploads and error handling.
 - **Transcription orchestrators (`src/slop/sndprompt.py`)** handle audio slicing with ffmpeg, prompt construction for Gemini, XML parsing of transcripts, and optional speaker-relabeling passes.
-- **Persistence layer (`src/slop/models.py`)** defines Pydantic models for interviews, segments, and utterances plus two SQLite-backed stores: a JSON key-value `Store` and binary `BlobStore`.
+- **Domain models (`src/slop/models.py`)** defines Pydantic models for interviews, segments, and utterances.
+- **Storage layer (`src/slop/store.py`)** provides generic blob/KV store functionality with SQLite-backed implementations: a JSON key-value `KeyValueStore` and binary `BlobStore`.
 - **Presentation helpers (`src/slop/views.py`)** centralize reusable UI fragments such as upload areas, audio players, and styling rules.
 
 ## Checking, Linting, Formatting, Fixing
 
 Type check with `uvx ty check`, lint with `uvx ruff check`, fix with `uvx ruff check --fix`,
 format with `uvx ruff format`.
+
+## Testing
+
+Run the test suite with `python -m tests.run_all`. 
+
+The test system uses a custom test runner (`tests/run_all.py`) that executes test modules and prints results with checkmarks. Test modules include:
+- **`tests/gemini_tests.py`** - Tests for Gemini API integration including text generation, streaming, function calling, thinking mode, file uploads, and multi-turn conversations
+- **`tests/test_transcribe.py`** - Tests for the FastAPI transcribe endpoints including home, interview list, and error handling for nonexistent resources
+- **`tests/test_promptflow_lazy_files.py`** - Tests for the promptflow lazy file handling and blob store integration
+
+Tests use a shared `tests/testing.py` module that provides utilities for creating test conversations and managing test state.
 
 ## Data & Persistence
 - Audio and transcript metadata live under the `IEVA_DATA` directory (defaults to `/data`).
@@ -41,4 +53,3 @@ format with `uvx ruff format`.
 - Docker image bundles dependencies, sets `IEVA_DATA=/data`, and launches `uv run fastapi run src.slop.transcribe:app --host 0.0.0.0 --port 8080`.
 - Local development works well with `uv run fastapi dev src.slop.transcribe:app`.
 - `tagflow-demo.py` offers a lightweight example of TagFlow usage outside the main app.
-- No automated tests yet; manual verification typically involves running the FastAPI server and exercising HTMX flows.

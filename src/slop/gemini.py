@@ -9,6 +9,8 @@ from typing import (
     Awaitable,
     Callable,
     Literal,
+    NotRequired,
+    TypedDict,
 )
 
 import httpx
@@ -33,30 +35,29 @@ tools = Parameter["list[Tool] | None"]("gemini_tools")
 tool_config = Parameter["ToolConfig | None"]("gemini_tool_config")
 
 
-class FunctionParameter(BaseModel):
+class FunctionParameter(TypedDict):
     type: str
     description: str
 
 
-class FunctionDeclaration(BaseModel):
+class FunctionDeclaration(TypedDict):
     name: str
     description: str
-    parameters: dict[str, Any] = Field(
-        default_factory=dict,
-        description="JSON Schema object with type, properties, and required fields",
-    )
+    parameters: NotRequired[
+        dict[str, Any]
+    ]  # JSON Schema object with type, properties, and required fields
 
 
-class FunctionCallingConfig(BaseModel):
+class FunctionCallingConfig(TypedDict):
     mode: Literal["ANY", "AUTO", "NONE"]
-    allowedFunctionNames: list[str] | None = None
+    allowedFunctionNames: NotRequired[list[str] | None]
 
 
-class ToolConfig(BaseModel):
-    functionCallingConfig: FunctionCallingConfig | None = None
+class ToolConfig(TypedDict, total=False):
+    functionCallingConfig: FunctionCallingConfig | None
 
 
-class Tool(BaseModel):
+class Tool(TypedDict):
     functionDeclarations: list[FunctionDeclaration]
 
 
@@ -102,7 +103,7 @@ class CodeExecutionResult(BaseModel):
     output: str | None = None
 
 
-class ThinkingConfig(BaseModel):
+class ThinkingConfig(TypedDict, total=False):
     """Configuration for model thinking/reasoning.
 
     Thinking allows models to process complex requests with internal reasoning.
@@ -113,13 +114,8 @@ class ThinkingConfig(BaseModel):
       * >0: Fixed budget of tokens
     """
 
-    includeThoughts: bool | None = Field(
-        default=None, description="Include thought summaries in response when available"
-    )
-    thinkingBudget: int | None = Field(
-        default=None,
-        description="Thought token budget: 0=disabled, -1=dynamic, >0=fixed",
-    )
+    includeThoughts: bool | None  # Include thought summaries in response when available
+    thinkingBudget: int | None  # Thought token budget: 0=disabled, -1=dynamic, >0=fixed
 
 
 class Part(BaseModel):
@@ -144,23 +140,22 @@ class Content(BaseModel):
     parts: list[Part] = Field(default_factory=list)
 
 
-class GenerationConfig(BaseModel):
-    stopSequences: list[str] | None = None
-    responseMimeType: str | None = None
-    candidateCount: int | None = Field(default=1, ge=1, le=1)
-    maxOutputTokens: int | None = None
-    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
-    topP: float | None = None
-    topK: int | None = None
-    presencePenalty: float | None = None
-    frequencyPenalty: float | None = None
-    responseLogprobs: bool | None = None
-    logprobs: int | None = None
-    enableEnhancedCivicAnswers: bool | None = None
-    thinkingConfig: ThinkingConfig | None = Field(
-        default=None,
-        description="Configuration for model thinking/reasoning (Gemini 2.5+)",
-    )
+class GenerationConfig(TypedDict, total=False):
+    stopSequences: list[str] | None
+    responseMimeType: str | None
+    candidateCount: int | None  # default=1, must be 1
+    maxOutputTokens: int | None
+    temperature: float | None  # range: 0.0 to 2.0
+    topP: float | None
+    topK: int | None
+    presencePenalty: float | None
+    frequencyPenalty: float | None
+    responseLogprobs: bool | None
+    logprobs: int | None
+    enableEnhancedCivicAnswers: bool | None
+    thinkingConfig: (
+        ThinkingConfig | None
+    )  # Configuration for model thinking/reasoning (Gemini 2.5+)
 
 
 class GenerateRequest(BaseModel):
