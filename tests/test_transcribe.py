@@ -3,7 +3,6 @@
 import os
 import tempfile
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import httpx
 import pytest
@@ -21,27 +20,27 @@ def app():
         api_key = os.getenv("GOOGLE_API_KEY", "test-api-key")
 
         # Use temporary files for test databases
-        with tempfile.TemporaryDirectory() as tmpdir:
-            data_dir = Path(tmpdir)
-            interviews_db_path = str(data_dir / "test_interviews.db")
-            blobs_db_path = str(data_dir / "test_blobs.db")
-            
-            # Initialize databases (creates tables if needed)
-            with models.sqlite_connection(interviews_db_path) as conn:
-                with models.interviews_db.using(conn):
-                    with models.sqlite_connection(blobs_db_path) as blobs_conn:
-                        with models.blobs_db.using(blobs_conn):
-                            models.init_databases()
-            
-            async with httpx.AsyncClient() as client:
-                this.state.state = AppState(
-                    client=client,
-                    google_api_key=api_key,
-                    gemini_model="gemini-2.5-flash-lite",
-                    interviews_db_path=interviews_db_path,
-                    blobs_db_path=blobs_db_path,
-                )
-                yield
+        with tempfile.NamedTemporaryFile(suffix=".db") as interviews_tmp:
+            with tempfile.NamedTemporaryFile(suffix=".db") as blobs_tmp:
+                interviews_db_path = interviews_tmp.name
+                blobs_db_path = blobs_tmp.name
+                
+                # Initialize databases (creates tables if needed)
+                with models.sqlite_connection(interviews_db_path) as conn:
+                    with models.interviews_db.using(conn):
+                        with models.sqlite_connection(blobs_db_path) as blobs_conn:
+                            with models.blobs_db.using(blobs_conn):
+                                models.init_databases()
+                
+                async with httpx.AsyncClient() as client:
+                    this.state.state = AppState(
+                        client=client,
+                        google_api_key=api_key,
+                        gemini_model="gemini-2.5-flash-lite",
+                        interviews_db_path=interviews_db_path,
+                        blobs_db_path=blobs_db_path,
+                    )
+                    yield
 
     return configure_app(
         FastAPI(
