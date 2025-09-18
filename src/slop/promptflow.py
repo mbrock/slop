@@ -310,20 +310,12 @@ BlobUploader = Callable[[bytes, str], Awaitable[File]]
 @contextmanager
 def new_chat(**kwargs: object):
     """Context manager that creates a new ConversationBuilder and sets it as current."""
-    with current_chat.using(ConversationBuilder(**kwargs)) as chat:
+    with current_chat.using(ChatContext(**kwargs)) as chat:
         yield chat
 
 
-class ConversationBuilder:
+class ChatContext:
     """Utility for collecting Gemini conversation turns via context managers."""
-
-    __slots__ = (
-        "_auto_format",
-        "_indent",
-        "_contents",
-        "_upload",
-        "_conversation_cm",
-    )
 
     def __init__(
         self,
@@ -484,16 +476,16 @@ class ConversationBuilder:
         return response
 
 
-current_chat = Parameter["ConversationBuilder"]("promptflow_current_chat")
+current_chat = Parameter[ChatContext]("promptflow_current_chat")
 current_generation_config = Parameter[GenerationConfig | None](
     "promptflow_generation_config"
 )
 
 
-def _require_chat() -> "ConversationBuilder":
+def _require_chat() -> ChatContext:
     chat = current_chat.peek()
     if chat is None:
-        raise RuntimeError("No active ConversationBuilder context")
+        raise RuntimeError("No active ChatContext")
     return chat
 
 

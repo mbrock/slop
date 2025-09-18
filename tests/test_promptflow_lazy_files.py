@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from slop.gemini import File, FileState
 from slop.models import init_databases, save_blob, with_databases
-from slop.promptflow import ConversationBuilder, file
+from slop.promptflow import ChatContext, file
 
 from .testing import test
 
@@ -37,7 +37,7 @@ async def test_build_contents_uploads_blob_once() -> None:
             state=FileState.ACTIVE,
         )
 
-    conversation = ConversationBuilder(upload=fake_upload)
+    conversation = ChatContext(upload=fake_upload)
     with conversation.user_turn():
         file(f"blob:{blob_hash}", mime_type="audio/ogg")
         file(f"blob:{blob_hash}", mime_type="audio/ogg")
@@ -67,7 +67,7 @@ async def test_build_contents_conflicting_mime_types() -> None:
     ) -> File:  # pragma: no cover - defensive
         raise AssertionError("upload should not be invoked")
 
-    conversation = ConversationBuilder(upload=fail_upload)
+    conversation = ChatContext(upload=fail_upload)
     with conversation.user_turn():
         file(f"blob:{blob_hash}", mime_type="audio/ogg")
         file(f"blob:{blob_hash}", mime_type="audio/wav")

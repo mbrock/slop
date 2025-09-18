@@ -8,7 +8,14 @@ from fastapi import HTTPException
 from slop import gemini
 from slop.audio import insert_segment_audio
 from slop.gemini import GenerationConfig
-from slop.models import Interview, Segment, Utterance, get_interview
+from slop.models import (
+    Interview,
+    ModelDecodeError,
+    ModelNotFoundError,
+    Segment,
+    Utterance,
+    get_interview,
+)
 from slop.promptflow import new_chat, tag, text
 
 logger = logging.getLogger(__name__)
@@ -98,8 +105,12 @@ async def transcribe_audio_segment(
         context_segments: List of previous segments for context, ordered from oldest to newest
     """
     # Retrieve interview and validate.
-    if not (interview := get_interview(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    try:
+        interview = get_interview(interview_id)
+    except ModelNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Interview not found") from exc
+    except ModelDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Interview data invalid") from exc
 
     if not interview.audio_hash:
         raise HTTPException(status_code=400, detail="Interview has no audio")

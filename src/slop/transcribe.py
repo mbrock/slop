@@ -30,6 +30,8 @@ from slop import gemini
 from slop.gemini import GeminiError, ModelOverloadedError
 from slop.models import (
     Interview,
+    ModelDecodeError,
+    ModelNotFoundError,
     Segment,
     Utterance,
     get_blob,
@@ -68,6 +70,17 @@ IMPROVE_SPEAKERS_ONCLICK = (
 app = APIRouter(
     default_response_class=TagResponse,
 )
+
+
+def load_interview_or_error(interview_id: str) -> Interview:
+    """Return the interview or raise an appropriate HTTP error."""
+
+    try:
+        return get_interview(interview_id)
+    except ModelNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Interview not found") from exc
+    except ModelDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Interview data invalid") from exc
 
 
 @contextmanager
@@ -527,8 +540,8 @@ def button_view(label: str, href: str | None = None, type: str = "button", **att
 
 def interview_header(title: str, interview_id: str):
     """Renders the interview header with title and action buttons."""
-    interview = get_interview(interview_id)
-    context_segments_value = str(interview.context_segments) if interview else "0"
+    interview = load_interview_or_error(interview_id)
+    context_segments_value = str(interview.context_segments)
 
     with tag.div():
         breadcrumb({"Ieva's Interviews": "/", title: "#"})
@@ -599,8 +612,7 @@ def interview_header(title: str, interview_id: str):
 @app.get("/interview/{interview_id}/segment/{segment_index}")
 async def view_segment(interview_id: str, segment_index: int):
     """Renders a single segment as a partial view."""
-    if not (interview := get_interview(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = load_interview_or_error(interview_id)
 
     try:
         segment = interview.segments[segment_index]
@@ -671,8 +683,7 @@ def render_utterance(interview_id, segment_index, i, utterance):
 @app.get("/interview/{interview_id}/segment/{segment_index}/edit")
 async def edit_segment_dialog(interview_id: str, segment_index: int):
     """Renders the inline edit form for a segment."""
-    if not (interview := get_interview(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = load_interview_or_error(interview_id)
 
     try:
         segment = interview.segments[segment_index]
@@ -750,8 +761,7 @@ async def view_interview(interview_id: str):
     """
     Renders the interview page, showing the audio player and segments.
     """
-    if not (interview := get_interview(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = load_interview_or_error(interview_id)
 
     with layout(f"Interview - {interview.filename}"):
         with tag.div(classes="prose mx-auto"):
@@ -849,8 +859,7 @@ async def transcribe_next_segment(
     Transcribe the next audio segment (2 minutes) for the given interview.
     Returns just the new segment as a partial view.
     """
-    if not (interview := get_interview(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = load_interview_or_error(interview_id)
 
     # Get context segments
     context_segments = []
@@ -927,8 +936,7 @@ async def retranscribe_segment(
     segment_index: int,
 ):
     """Retranscribe a specific segment using Gemini."""
-    if not (interview := get_interview(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = load_interview_or_error(interview_id)
 
     try:
         segment = interview.segments[segment_index]
@@ -965,8 +973,7 @@ async def improve_speaker_identification(
     hint: str | None = Form(None),
 ):
     """Improve speaker identification for a specific segment using Gemini."""
-    if not (interview := get_interview(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = load_interview_or_error(interview_id)
 
     try:
         segment = interview.segments[segment_index]
@@ -1044,8 +1051,7 @@ async def update_segment(
     content: str = Form(...),
 ):
     """Updates a segment's utterances from the edit form."""
-    if not (interview := get_interview(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = load_interview_or_error(interview_id)
 
     try:
         segment = interview.segments[segment_index]
@@ -1096,8 +1102,7 @@ async def update_segment(
 @app.post("/interview/{interview_id}/rename")
 async def rename_interview(interview_id: str, new_name: str = Form(...)):
     """Processes the interview rename."""
-    if not (interview := get_interview(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = load_interview_or_error(interview_id)
 
     interview.filename = new_name
     save_interview(interview)
@@ -1108,8 +1113,7 @@ async def rename_interview(interview_id: str, new_name: str = Form(...)):
 @app.get("/interview/{interview_id}/export")
 async def export_interview(interview_id: str):
     """Export the interview as a DOCX file."""
-    if not (interview := get_interview(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = load_interview_or_error(interview_id)
 
     # Create a new document
     doc = Document()
@@ -1155,8 +1159,7 @@ async def export_interview(interview_id: str):
 @app.post("/interview/{interview_id}/context-segments")
 async def update_context_segments(interview_id: str, context_segments: int = Form(...)):
     """Updates the number of context segments to use for transcription."""
-    if not (interview := get_interview(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = load_interview_or_error(interview_id)
 
     interview.context_segments = max(
         0, min(5, context_segments)
@@ -1174,8 +1177,7 @@ async def update_speaker(
     key: str = Form(...),
 ):
     """Updates the speaker for a specific utterance."""
-    if not (interview := get_interview(interview_id)):
-        raise HTTPException(status_code=404, detail="Interview not found")
+    interview = load_interview_or_error(interview_id)
 
     try:
         segment = interview.segments[segment_index]
